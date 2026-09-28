@@ -8,6 +8,18 @@ pub(crate) enum MetamorhicError {
     OutOfMemory(String),
 }
 
+#[macro_export]
+macro_rules! return_error {
+    ($error_variant:ident, $message_stem:literal, $($message_value:expr),*) => {
+        return Err(
+            crate::error::MetamorhicError::$error_variant(format!(
+                $message_stem,
+                $($message_value),*
+            ))
+        );
+    };
+}
+
 impl crate::io::log::Loggable for MetamorhicError {
 
     fn log_content(&self) -> String {

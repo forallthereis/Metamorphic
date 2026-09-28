@@ -5,4 +5,6 @@ edition = "2024"
 
 [dependencies]
 dendroverse = { version = "0.1.0", features = ["integrate-petgraph"] }
+float-cmp = "0.10.0"
+fxhash = "0.2.1"
 petgraph = "0.8.3"
