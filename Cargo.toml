@@ -7,4 +7,6 @@ edition = "2024"
 dendroverse = { version = "0.1.0", features = ["integrate-petgraph"] }
 float-cmp = "0.10.0"
 fxhash = "0.2.1"
+itertools = "0.15.0"
 petgraph = "0.8.3"
+polars = { version = "0.55.2", features = ["lazy"] }

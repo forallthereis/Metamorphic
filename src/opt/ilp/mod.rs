@@ -11,15 +11,24 @@ type VarValueType = i16;
 
 
 struct ILPVariable {
-    name: String,
-    lower_bound: VarValueType,
-    upper_bound: VarValueType,
+    pub name: String,
+    pub lower_bound: VarValueType,
+    pub upper_bound: VarValueType,
+}
+
+impl ILPVariable {
+
+    #[inline]
+    fn range(&self) -> usize {
+        (self.upper_bound - self.lower_bound) as usize + 1
+    }
+
 }
 
 
 
 struct ILPConstraint {
-    name: String,
-    rel: Ordering,
-    rhs: f64,
+    pub name: String,
+    pub rel: Ordering,
+    pub rhs: f64,
 }
