@@ -9,4 +9,4 @@ float-cmp = "0.10.0"
 fxhash = "0.2.1"
 itertools = "0.15.0"
 petgraph = "0.8.3"
-polars = { version = "0.55.2", features = ["lazy"] }
+polars = { version = "0.55.2", features = ["lazy", "cross_join"] }

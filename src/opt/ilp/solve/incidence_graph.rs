@@ -6,6 +6,8 @@ use fxhash::{FxBuildHasher, FxHashMap};
 use petgraph::{Graph, Undirected, graph::NodeIndex};
 use polars::prelude::*;
 
+use crate::F64_EQ_ULPS;
+
 
 
 
@@ -57,7 +59,7 @@ impl IncidenceGraph {
         let eid = eid_or_err.unwrap();
 
         for (coeff, var_name) in lhs {
-            if !approx_eq!(f64, coeff, 0.0, ulps = 2) && self.incidence_graph.try_update_edge(eid, self.var_name_map[var_name], coeff).is_err() {
+            if !approx_eq!(f64, coeff, 0.0, ulps = F64_EQ_ULPS) && self.incidence_graph.try_update_edge(eid, self.var_name_map[var_name], coeff).is_err() {
                 crate::return_error!(
                     OutOfMemory,
                     "there was not enough memory to add constraint '{}' to ILP instance '{}'. \
@@ -151,6 +153,7 @@ enum IncidenceGraphVertex {
 
 
 const OBJ_VALUE_COLUMN_NAME: &str = "obj value";
+const ROW_INDEX_COLUMN_NAME: &str = "child row index";
 
 
 
@@ -168,15 +171,7 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
     )
     {
 
-        let mut vars = FxHashMap::with_capacity_and_hasher(bag.len(), FxBuildHasher::new());
-        let mut constrs = FxHashMap::with_capacity_and_hasher(bag.len(), FxBuildHasher::new());
-        for vid in bag {
-            let index = (*vid as u32).into();
-            match additional_data.incidence_graph.node_weight(index).unwrap() {
-                IncidenceGraphVertex::VarVertex(var_info) => {vars.insert(index, var_info);},
-                IncidenceGraphVertex::ConstrVertex(constr_info) => {constrs.insert(index, constr_info);},
-            }
-        }
+        let (vars, constrs) = split_vec_into_vars_and_constrs(bag, additional_data);
 
         let mut repeat_var_value_times: usize = vars
             .iter()
@@ -200,13 +195,16 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
 
             self.records.with_column(var_column).unwrap();
 
-            let new_obj_column =
-                &self.records[OBJ_VALUE_COLUMN_NAME]
-                +
-                &(&self.records[var_column_name.as_str()] * additional_data.obj_coeffs[&var_vid]);
-            let new_obj_column = new_obj_column.unwrap();
-
-            self.records.replace(OBJ_VALUE_COLUMN_NAME, new_obj_column).unwrap();
+            self.records = self.records
+                .clone()
+                .lazy()
+                .with_column(
+                    (
+                        col(OBJ_VALUE_COLUMN_NAME) + lit(additional_data.obj_coeffs[&var_vid]) * col(var_column_name)
+                    ).alias(OBJ_VALUE_COLUMN_NAME)
+                )
+                .collect()
+                .unwrap();
 
         }
 
@@ -224,13 +222,16 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                     let var_column_name = format!("v{}", var_vid.index());
                     let coeff = *edge.weight();
 
-                    let new_constr_column =
-                        &self.records[constr_column_name.as_str()]
-                        +
-                        &(&self.records[var_column_name.as_str()] * coeff);
-                    let new_constr_column = new_constr_column.unwrap();
-
-                    self.records.replace(constr_column_name.as_str(), new_constr_column).unwrap();
+                    self.records = self.records
+                        .clone()
+                        .lazy()
+                        .with_column(
+                            (
+                                col(constr_column_name.clone()) + lit(coeff) * col(var_column_name)
+                            ).alias(constr_column_name.clone())
+                        )
+                        .collect()
+                        .unwrap();
 
                 }
 
@@ -243,14 +244,114 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
     fn forget_introduce_payload(
         &mut self,
         child_bag: &Vec<usize>,
-        child_nid: usize,
+        _child_nid: usize,
         child_memo: &Self,
         forgotten_vids: &Vec<usize>,
         introduced_vids: &Vec<usize>,
         additional_data: &IncidenceGraph,
     )
     {
-        todo!();
+
+        let (vars, constrs) = split_vec_into_vars_and_constrs(child_bag, additional_data);
+        let (forgotten_vars, forgotten_constrs) = split_vec_into_vars_and_constrs(forgotten_vids, additional_data);
+        let (introduced_vars, introduced_constrs) = split_vec_into_vars_and_constrs(introduced_vids, additional_data);
+
+        self.records = child_memo.records.with_row_index(ROW_INDEX_COLUMN_NAME.into(), None).unwrap();
+
+        // Forget vertices
+        // Filter out the records where at least one forgotten constraint isn't satsfied
+        // Then remove all columns corresponding to the forgotten vertices and group the remaining ones while aggregating the objective value
+        let mut intermediate_records = self.records
+            .clone()
+            .lazy()
+            .filter(
+                forgotten_constrs
+                    .iter()
+                    .map(
+                        |(constr_vid, constr_info)| {
+                            let constr_column_name = format!("c{}", constr_vid.index());
+                            match constr_info.rel {
+                                Ordering::Equal => {
+                                    let (eq_lower_bound, eq_upper_bound) = ulp_bounds(constr_info.rhs);
+                                    col(constr_column_name.clone()).gt_eq(eq_lower_bound).and(col(constr_column_name).lt_eq(eq_upper_bound))
+                                },
+                                Ordering::Greater => col(constr_column_name).gt_eq(constr_info.rhs),
+                                Ordering::Less => col(constr_column_name).lt_eq(constr_info.rhs),
+                            }
+                        }
+                    )
+                    .fold(lit(true), |acc, expr| acc.and(expr))
+            )
+            .drop(cols(forgotten_vars.iter().map(|(var_vid, _)| format!("v{}", var_vid.index()))))
+            .drop(cols(forgotten_constrs.iter().map(|(constr_vid, _)| format!("c{}", constr_vid.index()))))
+            .group_by([all().exclude_cols([ROW_INDEX_COLUMN_NAME, OBJ_VALUE_COLUMN_NAME])])
+            .agg(
+                match additional_data.opt_goal {
+                    crate::opt::OptGoal::Max => [
+                        col(OBJ_VALUE_COLUMN_NAME).max().alias(OBJ_VALUE_COLUMN_NAME),
+                        col(ROW_INDEX_COLUMN_NAME).max_by(col(OBJ_VALUE_COLUMN_NAME)).alias(ROW_INDEX_COLUMN_NAME),
+                    ],
+                    crate::opt::OptGoal::Min => [
+                        col(OBJ_VALUE_COLUMN_NAME).min().alias(OBJ_VALUE_COLUMN_NAME),
+                        col(ROW_INDEX_COLUMN_NAME).min_by(col(OBJ_VALUE_COLUMN_NAME)).alias(ROW_INDEX_COLUMN_NAME),
+                    ],
+                }
+            );
+
+        // Introduce vertices
+        for (var_vid, var_info) in introduced_vars.iter() {
+
+            let var_column_name: PlSmallStr = format!("v{}", var_vid.index()).into();
+            let var_values = df!(var_column_name.clone() => Vec::from_iter((var_info.lower_bound..=var_info.upper_bound).map(|value| value as f64))).unwrap().lazy();
+
+            intermediate_records = intermediate_records
+                .cross_join(var_values, None)
+                .with_column(
+                    (
+                        col(OBJ_VALUE_COLUMN_NAME) + lit(additional_data.obj_coeffs[var_vid]) * col(var_column_name)
+                    ).alias(OBJ_VALUE_COLUMN_NAME)
+                );
+
+        }
+
+        self.records = intermediate_records.collect().unwrap();
+
+        for (constr_vid, _) in introduced_constrs.iter() {
+
+            let constr_column_name: PlSmallStr = format!("c{}", constr_vid.index()).into();
+            let constr_column = Column::new(constr_column_name.clone(), vec![0.0; self.records.height()]);
+
+            self.records.with_column(constr_column).unwrap();
+
+            let new_vars = vars
+                .iter()
+                .filter(|(var_vid, _)| !forgotten_vars.contains_key(*var_vid))
+                .chain(introduced_vars.iter());
+
+            for (var_vid, _) in new_vars {
+
+                if let Some(edge) = additional_data.incidence_graph.edges_connecting(*constr_vid, *var_vid).next() {
+
+                    let var_column_name = format!("v{}", var_vid.index());
+                    let coeff = *edge.weight();
+
+                    self.records = self.records
+                        .clone()
+                        .lazy()
+                        .with_column(
+                            (
+                                col(constr_column_name.clone()) + lit(coeff) * col(var_column_name)
+                            ).alias(constr_column_name.clone())
+                        )
+                        .collect()
+                        .unwrap();
+
+                }
+
+            }
+
+        }
+
     }
 
     fn join_payload(
@@ -273,4 +374,39 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
 struct IncidenceGraphMemoRecord {
     var_values: FxHashMap<NodeIndex, crate::opt::ilp::VarValueType>,
     constr_values: FxHashMap<NodeIndex, f64>,
+}
+
+
+
+fn split_vec_into_vars_and_constrs<'a>(
+    bag: &Vec<usize>,
+    incidence_graph: &'a IncidenceGraph,
+) -> (FxHashMap<NodeIndex, &'a crate::opt::ilp::ILPVariable>, FxHashMap<NodeIndex, &'a crate::opt::ilp::ILPConstraint>) {
+
+    let mut vars = FxHashMap::with_capacity_and_hasher(bag.len(), FxBuildHasher::new());
+    let mut constrs = FxHashMap::with_capacity_and_hasher(bag.len(), FxBuildHasher::new());
+    for vid in bag {
+        let index = (*vid as u32).into();
+        match incidence_graph.incidence_graph.node_weight(index).unwrap() {
+            IncidenceGraphVertex::VarVertex(var_info) => {vars.insert(index, var_info);},
+            IncidenceGraphVertex::ConstrVertex(constr_info) => {constrs.insert(index, constr_info);},
+        }
+    }
+
+    (vars, constrs)
+
+}
+
+fn ulp_bounds(x: f64) -> (f64, f64) {
+
+    let mut lower = x;
+    let mut upper = x;
+
+    for _ in 0..F64_EQ_ULPS {
+        lower = lower.next_down();
+        upper = upper.next_up();
+    }
+
+    (lower, upper)
+
 }
