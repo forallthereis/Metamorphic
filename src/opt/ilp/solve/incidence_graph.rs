@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, sync::{Arc, Mutex}};
 
-use dendroverse::{DendroverseInstance, NiceDTDMemo};
+use dendroverse::{BacktrackableMemo, DendroverseInstance, NiceDTDMemo};
 use float_cmp::approx_eq;
 use fxhash::{FxBuildHasher, FxHashMap};
 use petgraph::{Graph, Undirected, graph::NodeIndex};
@@ -10,6 +10,7 @@ use polars::prelude::*;
 
 
 
+// Internally, the optimisation goal is always to maximise
 pub(crate) struct IncidenceGraph {
     name: String,
     status: crate::opt::InstanceStatus<FxHashMap<NodeIndex, crate::opt::ilp::VarValueType>>,
@@ -105,7 +106,13 @@ impl IncidenceGraph {
 
         let vid = vid_or_err.unwrap();
         self.var_name_map.insert(name, vid);
-        self.obj_coeffs.insert(vid, obj_coeff);
+        self.obj_coeffs.insert(
+            vid,
+            match self.opt_goal {
+                crate::opt::OptGoal::Max => obj_coeff,
+                crate::opt::OptGoal::Min => -obj_coeff,
+            },
+        );
 
         Ok(())
 
@@ -461,11 +468,73 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
 
 }
 
+impl BacktrackableMemo for IncidenceGraphMemo {
+
+    type BacktrackingHint = usize;
+    type PartialSolutionType = IncidenceGraphSolution;
+    type SolutionType = IncidenceGraphSolution;
+
+    fn extend_partial_solution(
+        &self,
+        _nid: usize,
+        mut partial_solution: Self::PartialSolutionType,
+        hint: Option<Self::BacktrackingHint>,
+        children_nids: &Vec<usize>
+    ) -> (Option<Self::PartialSolutionType>, Vec<Option<Self::BacktrackingHint>>)
+    {
+
+        let mut next_hint = Vec::with_capacity(2);
+
+        let opt_row_idx = match hint {
+            Some(value) => value,
+            None => match self.records[OBJ_VALUE_COLUMN_NAME].as_materialized_series().arg_max() {
+                Some(value) => value,
+                None => return (None, vec![None; children_nids.len()]),
+            },
+        };
+
+        for column_name in self.records.get_column_names() {
+            if column_name.starts_with("v") {
+                let var_vid: NodeIndex<u32> = NodeIndex::new(column_name[1..].parse().unwrap());
+                partial_solution.vars_map.insert(var_vid, self.records[column_name.as_str()].f64().unwrap().get(opt_row_idx).unwrap() as i16);
+            }
+        }
+
+        match children_nids.len() {
+            0 => (),
+            1 => next_hint.push(Some(
+                self
+                    .records[ROW_INDEX_COLUMN_NAME]
+                    .u64()
+                    .unwrap()
+                    .get(opt_row_idx)
+                    .unwrap() as usize
+            )),
+            _ => {
+                for child_nid in children_nids {
+                    next_hint.push(Some(
+                        self
+                            .records[format!("{}{}", ROW_INDEX_COLUMN_NAME, child_nid).as_str()]
+                            .u64()
+                            .unwrap()
+                            .get(opt_row_idx)
+                            .unwrap() as usize
+                    ));
+                }
+            },
+        }
+
+        (Some(partial_solution), next_hint)
+
+    }
+
+}
 
 
-struct IncidenceGraphMemoRecord {
-    var_values: FxHashMap<NodeIndex, crate::opt::ilp::VarValueType>,
-    constr_values: FxHashMap<NodeIndex, f64>,
+
+#[derive(Default)]
+struct IncidenceGraphSolution {
+    vars_map: FxHashMap<NodeIndex, crate::opt::ilp::VarValueType>,
 }
 
 
