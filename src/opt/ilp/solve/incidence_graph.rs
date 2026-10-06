@@ -1,12 +1,10 @@
-use std::{cmp::Ordering, iter::once, sync::{Arc, Mutex}};
+use std::{cmp::Ordering, sync::{Arc, Mutex}};
 
 use dendroverse::{DendroverseInstance, NiceDTDMemo};
 use float_cmp::approx_eq;
 use fxhash::{FxBuildHasher, FxHashMap};
 use petgraph::{Graph, Undirected, graph::NodeIndex};
 use polars::prelude::*;
-
-use crate::F64_EQ_ULPS;
 
 
 
@@ -59,7 +57,7 @@ impl IncidenceGraph {
         let eid = eid_or_err.unwrap();
 
         for (coeff, var_name) in lhs {
-            if !approx_eq!(f64, coeff, 0.0, ulps = F64_EQ_ULPS) && self.incidence_graph.try_update_edge(eid, self.var_name_map[var_name], coeff).is_err() {
+            if !approx_eq!(f64, coeff, 0.0, ulps = crate::F64_EQ_ULPS) && self.incidence_graph.try_update_edge(eid, self.var_name_map[var_name], coeff).is_err() {
                 crate::return_error!(
                     OutOfMemory,
                     "there was not enough memory to add constraint '{}' to ILP instance '{}'. \
@@ -138,7 +136,19 @@ impl crate::opt::Solver for IncidenceGraph {
         timeout: f64,
     ) -> crate::error::Result<()>
     {
+
+        let mut dv_instance: DendroverseInstance<IncidenceGraphMemo, _> =
+            match DendroverseInstance::with_auto_generated_nice_dtd(&self.incidence_graph, self) {
+                Ok(value) => value,
+                Err(_) => crate::return_error!(Generic, "Tree decomposition construction failed."),
+            };
+
+        if dv_instance.solve_using_nice_dtd(threads_count).is_err() {
+            crate::return_error!(Generic, "An error occured while solving instance '{}'.", self.name);
+        };
+
         todo!();
+
     }
 
 }
@@ -316,14 +326,16 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
 
         }
 
-        self.records = intermediate_records.collect().unwrap();
-
         for (constr_vid, _) in introduced_constrs.iter() {
 
             let constr_column_name: PlSmallStr = format!("c{}", constr_vid.index()).into();
-            let constr_column = Column::new(constr_column_name.clone(), vec![0.0; self.records.height()]);
 
-            self.records.with_column(constr_column).unwrap();
+            intermediate_records = intermediate_records
+                .with_column(
+                    (
+                        lit(0.0)
+                    ).alias(constr_column_name.clone())
+                );
 
             let new_vars = vars
                 .iter()
@@ -337,22 +349,20 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                     let var_column_name = format!("v{}", var_vid.index());
                     let coeff = *edge.weight();
 
-                    self.records = self.records
-                        .clone()
-                        .lazy()
+                    intermediate_records = intermediate_records
                         .with_column(
                             (
                                 col(constr_column_name.clone()) + lit(coeff) * col(var_column_name)
                             ).alias(constr_column_name.clone())
-                        )
-                        .collect()
-                        .unwrap();
+                        );
 
                 }
 
             }
 
         }
+
+        self.records = intermediate_records.collect().unwrap();
 
     }
 
@@ -484,7 +494,7 @@ fn ulp_bounds(x: f64) -> (f64, f64) {
     let mut lower = x;
     let mut upper = x;
 
-    for _ in 0..F64_EQ_ULPS {
+    for _ in 0..crate::F64_EQ_ULPS {
         lower = lower.next_down();
         upper = upper.next_up();
     }
