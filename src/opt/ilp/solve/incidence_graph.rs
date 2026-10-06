@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, sync::{Arc, Mutex}};
+use std::{cmp::Ordering, iter::once, sync::{Arc, Mutex}};
 
 use dendroverse::{DendroverseInstance, NiceDTDMemo};
 use float_cmp::approx_eq;
@@ -252,18 +252,20 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
     )
     {
 
-        let (vars, constrs) = split_vec_into_vars_and_constrs(child_bag, additional_data);
+        let (vars, _) = split_vec_into_vars_and_constrs(child_bag, additional_data);
         let (forgotten_vars, forgotten_constrs) = split_vec_into_vars_and_constrs(forgotten_vids, additional_data);
         let (introduced_vars, introduced_constrs) = split_vec_into_vars_and_constrs(introduced_vids, additional_data);
 
-        self.records = child_memo.records.with_row_index(ROW_INDEX_COLUMN_NAME.into(), None).unwrap();
+        let mut intermediate_records = child_memo.records
+            .clone()
+            .lazy()
+            .select([all().exclude_cols([format!("^{}*$", ROW_INDEX_COLUMN_NAME)]).as_expr()])
+            .with_row_index(ROW_INDEX_COLUMN_NAME, None);
 
         // Forget vertices
         // Filter out the records where at least one forgotten constraint isn't satsfied
         // Then remove all columns corresponding to the forgotten vertices and group the remaining ones while aggregating the objective value
-        let mut intermediate_records = self.records
-            .clone()
-            .lazy()
+        intermediate_records = intermediate_records
             .filter(
                 forgotten_constrs
                     .iter()
@@ -364,7 +366,87 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
         additional_data: &IncidenceGraph,
     )
     {
-        todo!();
+
+        let (vars, constrs) = split_vec_into_vars_and_constrs(children_bag, additional_data);
+
+        let intermediate_child1_records = child1_memo.records
+            .clone()
+            .lazy()
+            .select([all().exclude_cols([format!("^{}.*$", ROW_INDEX_COLUMN_NAME)]).as_expr()])
+            .with_row_index(format!("{}{}", ROW_INDEX_COLUMN_NAME, child1_nid), None);
+        let intermediate_child2_records = child2_memo.records
+            .clone()
+            .lazy()
+            .select([all().exclude_cols([format!("^{}*$", ROW_INDEX_COLUMN_NAME)]).as_expr()])
+            .with_row_index(format!("{}{}", ROW_INDEX_COLUMN_NAME, child2_nid), None);
+
+        let joined_column_names: Vec<_> = vars
+            .iter()
+            .map(|(var_vid, _)| col(format!("v{}", var_vid.index())))
+            .collect();
+
+        let mut intermediate_records = intermediate_child1_records
+            .join(
+                intermediate_child2_records,
+                joined_column_names.clone(),
+                joined_column_names,
+                JoinArgs::new(JoinType::Inner),
+            );
+
+        for (constr_vid, _) in constrs {
+
+            let constr_column_name: PlSmallStr = format!("c{}", constr_vid.index()).into();
+            let constr_column_name2: PlSmallStr = format!("c{}_right", constr_vid.index()).into();
+
+            intermediate_records = intermediate_records
+                .with_column(
+                    (
+                        col(constr_column_name.clone()) + col(constr_column_name2.clone())
+                    ).alias(constr_column_name.clone())
+                )
+                .drop(cols([constr_column_name2]));
+
+            for (var_vid, _) in vars.iter() {
+
+                if let Some(edge) = additional_data.incidence_graph.edges_connecting(constr_vid, *var_vid).next() {
+
+                    let var_column_name = format!("v{}", var_vid.index());
+                    let coeff = *edge.weight();
+
+                    intermediate_records = intermediate_records
+                        .with_column(
+                            (
+                                col(constr_column_name.clone()) - lit(coeff) * col(var_column_name)
+                            ).alias(constr_column_name.clone())
+                        );
+
+                }
+
+            }
+
+        }
+
+        intermediate_records = intermediate_records
+            .with_column(
+                (
+                    col(OBJ_VALUE_COLUMN_NAME) + col(format!("{}_right", OBJ_VALUE_COLUMN_NAME))
+                    ).alias(OBJ_VALUE_COLUMN_NAME)
+            )
+            .drop(cols([format!("{}_right", OBJ_VALUE_COLUMN_NAME)]));
+
+        for (var_vid, _) in vars {
+
+            intermediate_records = intermediate_records
+                .with_column(
+                    (
+                        col(OBJ_VALUE_COLUMN_NAME) - lit(additional_data.obj_coeffs[&var_vid]) * col(format!("v{}", var_vid.index()))
+                        ).alias(OBJ_VALUE_COLUMN_NAME)
+                );
+
+        }
+
+        self.records = intermediate_records.collect().unwrap();
+
     }
 
 }
