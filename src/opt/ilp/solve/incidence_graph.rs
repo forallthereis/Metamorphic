@@ -140,21 +140,66 @@ impl crate::opt::Solver for IncidenceGraph {
         &mut self,
         logger: Arc<Mutex<crate::io::log::Logger>>,
         threads_count: usize,
-        timeout: f64,
-    ) -> crate::error::Result<()>
+    )
     {
+
+        logger.lock().unwrap().log_info(format!(
+            "Computing a nice tree decomposition for ILP instance '{}'...",
+            self.name
+        ));
 
         let mut dv_instance: DendroverseInstance<IncidenceGraphMemo, _> =
             match DendroverseInstance::with_auto_generated_nice_dtd(&self.incidence_graph, self) {
                 Ok(value) => value,
-                Err(_) => crate::return_error!(Generic, "Tree decomposition construction failed."),
+                Err(_) => {
+                    logger.lock().unwrap().log_error(
+                        crate::error::MetamorhicError::Generic(format!(
+                            "Tree decomposition construction failed for ILP instance '{}'.\
+                            Most probable cause is that the incidence graph of the instance is too big to compute its exact tree decomposition.",
+                            self.name
+                        ))
+                    );
+                    return;
+                },
             };
 
+        logger.lock().unwrap().log_info(
+            "A nice tree decomposition was successfully computed. Proceeding with dynamic programming..."
+        );
+
         if dv_instance.solve_using_nice_dtd(threads_count).is_err() {
-            crate::return_error!(Generic, "An error occured while solving instance '{}'.", self.name);
+            logger.lock().unwrap().log_error(
+                crate::error::MetamorhicError::Generic(format!(
+                    "An error occured while solving instance '{}'.",
+                    self.name
+                ))
+            );
+            return;
         };
 
-        todo!();
+        logger.lock().unwrap().log_info(format!(
+            "ILP instance '{}' was solved. Retrieving an optimal solution...",
+            self.name
+        ));
+
+        self.status = match dv_instance.solution() {
+            Some(solution) => crate::opt::InstanceStatus::Optimal(solution.vars_map),
+            None => crate::opt::InstanceStatus::Infeasible,
+        };
+
+        logger.lock().unwrap().log_info(
+            match self.status {
+                crate::opt::InstanceStatus::Optimal(_) => format!(
+                    "ILP instance '{}' is feasible and an optimal solution was retrieved.",
+                    self.name
+                ),
+                crate::opt::InstanceStatus::Infeasible => format!(
+                    "ILP instance '{}' is infeasible, no solution exists.",
+                    self.name
+                ),
+                _ => unreachable!(),
+            }
+        );
 
     }
 
@@ -305,16 +350,10 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
             .drop(cols(forgotten_constrs.iter().map(|(constr_vid, _)| format!("c{}", constr_vid.index()))))
             .group_by([all().exclude_cols([ROW_INDEX_COLUMN_NAME, OBJ_VALUE_COLUMN_NAME])])
             .agg(
-                match additional_data.opt_goal {
-                    crate::opt::OptGoal::Max => [
-                        col(OBJ_VALUE_COLUMN_NAME).max().alias(OBJ_VALUE_COLUMN_NAME),
-                        col(ROW_INDEX_COLUMN_NAME).max_by(col(OBJ_VALUE_COLUMN_NAME)).alias(ROW_INDEX_COLUMN_NAME),
-                    ],
-                    crate::opt::OptGoal::Min => [
-                        col(OBJ_VALUE_COLUMN_NAME).min().alias(OBJ_VALUE_COLUMN_NAME),
-                        col(ROW_INDEX_COLUMN_NAME).min_by(col(OBJ_VALUE_COLUMN_NAME)).alias(ROW_INDEX_COLUMN_NAME),
-                    ],
-                }
+                [
+                    col(OBJ_VALUE_COLUMN_NAME).max().alias(OBJ_VALUE_COLUMN_NAME),
+                    col(ROW_INDEX_COLUMN_NAME).max_by(col(OBJ_VALUE_COLUMN_NAME)).alias(ROW_INDEX_COLUMN_NAME),
+                ]
             );
 
         // Introduce vertices

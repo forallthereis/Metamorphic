@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, mpsc::Sender};
+use std::{sync::{Arc, Mutex}};
 
 pub mod ilp;
 
@@ -27,6 +27,5 @@ pub(crate) trait Solver {
         &mut self,
         logger: Arc<Mutex<crate::io::log::Logger>>,
         threads_count: usize,
-        timeout: f64,
-    ) -> crate::error::Result<()>;
+    );
 }
