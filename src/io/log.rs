@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::{fmt::Display, io::Write};
 
 use chrono::{Datelike, Local, Timelike};
 
@@ -22,7 +22,7 @@ where
 
 
 
-pub struct Logger {
+pub(crate) struct Logger {
     format: LogFormat,
     output_file: Box<dyn Write>,
 }
@@ -203,7 +203,34 @@ impl Logger {
 
 
 
-enum LogFormat {
+pub(crate) enum LogFormat {
     PlainText,
     Markdown,
+}
+
+impl Display for LogFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PlainText => write!(f, "Plain text"),
+            Self::Markdown => write!(f, "Markdown"),
+        }
+    }
+}
+
+
+
+pub(crate) enum LogDestination {
+    None,
+    StdOut,
+    File,
+}
+
+impl Display for LogDestination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "Nowhere, i.e. disable logs"),
+            Self::StdOut => write!(f, "Standard output channel, i.e. stdout"),
+            Self::File => write!(f, "File on a disk"),
+        }
+    }
 }
