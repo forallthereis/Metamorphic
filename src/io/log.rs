@@ -1,4 +1,4 @@
-use std::{fmt::Display, io::Write};
+use std::{fmt::Display, fs::File, io::Write};
 
 use chrono::{Datelike, Local, Timelike};
 
@@ -24,7 +24,7 @@ where
 
 pub(crate) struct Logger {
     format: LogFormat,
-    output_file: Box<dyn Write>,
+    log_writer: Box<dyn Write>,
 }
 
 impl Logger {
@@ -34,8 +34,13 @@ impl Logger {
         Item: Loggable,
     {
 
+        if self.format == LogFormat::None {
+            return;
+        }
+
         let now = Local::now();
         let timestamp_string = match self.format {
+            LogFormat::None => unreachable!(),
             LogFormat::PlainText => format!(
                 "{:04}-{:02}-{:02} {:02}-{:02}-{:02}|INFO|",
                 now.year(),
@@ -58,7 +63,7 @@ impl Logger {
 
         let content = self.fmt_log_content(item.log_content());
 
-        write!(self.output_file, "{}{}", timestamp_string, content);
+        writeln!(self.log_writer, "{}{}", timestamp_string, content).expect("Log destination is no longer accessible.");
 
     }
 
@@ -67,8 +72,13 @@ impl Logger {
         Item: Loggable,
     {
 
+        if self.format == LogFormat::None {
+            return;
+        }
+
         let now = Local::now();
         let timestamp_string = match self.format {
+            LogFormat::None => unreachable!(),
             LogFormat::PlainText => format!(
                 "{:04}-{:02}-{:02} {:02}-{:02}-{:02}|FAIL|",
                 now.year(),
@@ -91,13 +101,39 @@ impl Logger {
 
         let content = self.fmt_log_content(item.log_content());
 
-        write!(self.output_file, "{}{}", timestamp_string, content);
+        writeln!(self.log_writer, "{}{}", timestamp_string, content).expect("Log destination is no longer accessible.");
+
+    }
+
+    pub(crate) fn new(config: &crate::Config) -> Self {
+
+        let mut log_file_path = config.input_file_path.clone();
+        log_file_path.set_extension("log");
+
+        let mut log_writer: Box<dyn Write> = match config.log_destination {
+            LogDestination::None | LogDestination::StdOut => Box::new(std::io::stdout()),
+            LogDestination::File => Box::new(File::create(log_file_path).expect("Couldn't create a log file.")),
+        };
+
+        let format = match config.log_destination {
+            LogDestination::None => LogFormat::None,
+            _ => config.log_format.clone(),
+        };
+
+        match format {
+            LogFormat::Markdown => {writeln!(log_writer, "|Timestamp|Message type|Message|\n|:-----:|:-----:|-----|").expect("Log destination is no longer accessible.")},
+            _ => (),
+        }
+
+        Logger { format, log_writer }
 
     }
 
     fn fmt_log_content(&self, message: String) -> String {
 
         match self.format {
+
+            LogFormat::None => unreachable!(),
 
             LogFormat::PlainText => {
 
@@ -108,14 +144,14 @@ impl Logger {
 
                 let mut chars = message.chars().peekable();
 
-                while let Some(char) = chars.peek().copied() {
-                    if char.is_alphanumeric() {
+                while let Some(ch) = chars.peek().copied() {
+                    if ch.is_alphanumeric() {
                         // Read a complete word
                         let mut word = String::new();
 
-                        while let Some(char) = chars.peek().copied() {
-                            if char.is_alphanumeric() || char == '.' {
-                                word.push(char);
+                        while let Some(ch) = chars.peek().copied() {
+                            if ch.is_alphanumeric() || ch == '.' {
+                                word.push(ch);
                                 chars.next();
                             } else {
                                 break;
@@ -124,6 +160,7 @@ impl Logger {
 
                         // Flush any existing chunk before a word that cannot fit
                         if word.chars().count() > MAX_LENGTH {
+
                             if !current.is_empty() {
                                 lines.push(std::mem::take(&mut current));
                             }
@@ -131,6 +168,7 @@ impl Logger {
                             let mut chunk = String::new();
 
                             for ch in word.chars() {
+
                                 chunk.push(ch);
 
                                 if chunk.chars().count() == MAX_LENGTH {
@@ -141,7 +179,9 @@ impl Logger {
                             if !chunk.is_empty() {
                                 current = chunk;
                             }
+
                         } else {
+
                             let needed = word.chars().count();
 
                             if !current.is_empty() && current.chars().count() + needed > MAX_LENGTH {
@@ -149,27 +189,37 @@ impl Logger {
                             }
 
                             current.push_str(&word);
+
                         }
                     } else {
                         // Read a run of non-word characters.
                         let mut separator = String::new();
 
                         while let Some(ch) = chars.peek().copied() {
+
                             if ch.is_alphanumeric() {
                                 break;
                             }
 
                             separator.push(ch);
                             chars.next();
+
                         }
 
                         // Preserve separators, splitting them if necessary.
                         for ch in separator.chars() {
+
                             if current.chars().count() == MAX_LENGTH {
                                 lines.push(std::mem::take(&mut current));
                             }
 
+                            if ch == '\n' {
+                                lines.push(std::mem::take(&mut current));
+                                continue;
+                            }
+
                             current.push(ch);
+
                         }
                     }
                 }
@@ -203,7 +253,9 @@ impl Logger {
 
 
 
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum LogFormat {
+    None,
     PlainText,
     Markdown,
 }
@@ -211,6 +263,7 @@ pub(crate) enum LogFormat {
 impl Display for LogFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::None => unreachable!(),
             Self::PlainText => write!(f, "Plain text"),
             Self::Markdown => write!(f, "Markdown"),
         }

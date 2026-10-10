@@ -1,12 +1,17 @@
 use std::path::{Path, PathBuf};
 
-use inquire::{Select, Text, validator::Validation};
+use inquire::{Select, Text, set_global_render_config, ui::{Color, RenderConfig, Styled}, validator::Validation};
 
 
 
 
 
 pub(crate) fn inquire_config() -> crate::Config {
+
+    let mut cli_config = RenderConfig::default();
+    cli_config.unhighlighted_option_prefix = Styled::new("    ");
+    cli_config.highlighted_option_prefix = Styled::new("   → ").with_fg(Color::LightCyan);
+    set_global_render_config(cli_config);
 
     let input_file_path = PathBuf::from(
         Text::new("Path to the input file:")
