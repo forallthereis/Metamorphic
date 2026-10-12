@@ -3,6 +3,7 @@ use std::{cmp::Ordering, sync::{Arc, Mutex}};
 use dendroverse::{BacktrackableMemo, DendroverseInstance, NiceDTDMemo};
 use float_cmp::approx_eq;
 use fxhash::{FxBuildHasher, FxHashMap};
+use lp_parser_rs::{LpProblem, VariableKind, model::{ComparisonOp, Constraint, Sense}};
 use petgraph::{Graph, Undirected, graph::NodeIndex};
 use polars::prelude::*;
 
@@ -12,7 +13,7 @@ use polars::prelude::*;
 
 // Internally, the optimisation goal is always to maximise
 pub(crate) struct IncidenceGraph {
-    name: String,
+    pub name: String,
     status: crate::opt::InstanceStatus<IncidenceGraphSolution>,
     obj_coeffs: FxHashMap<NodeIndex, f64>,
     opt_goal: crate::opt::OptGoal,
@@ -42,7 +43,7 @@ impl IncidenceGraph {
 
         let eid_or_err = self.incidence_graph.try_add_node(
             IncidenceGraphVertex::ConstrVertex(
-                crate::opt::ilp::ILPConstraint { name: name.clone(), rel, rhs }
+                crate::opt::ilp::Constraint { name: name.clone(), rel, rhs }
             )
         );
 
@@ -91,7 +92,7 @@ impl IncidenceGraph {
 
         let vid_or_err = self.incidence_graph.try_add_node(
             IncidenceGraphVertex::VarVertex(
-                crate::opt::ilp::ILPVariable { name: name.clone(), lower_bound, upper_bound }
+                crate::opt::ilp::Variable { name: name.clone(), lower_bound, upper_bound }
             )
         );
 
@@ -167,7 +168,12 @@ impl crate::opt::Solver for IncidenceGraph {
 
     fn solution_obj_value(&self) -> crate::opt::InstanceStatus<f64> {
         match &self.status {
-            crate::opt::InstanceStatus::Optimal(solution) => crate::opt::InstanceStatus::Optimal(solution.opt_value),
+            crate::opt::InstanceStatus::Optimal(solution) => crate::opt::InstanceStatus::Optimal(
+                match self.opt_goal {
+                    crate::opt::OptGoal::Max => solution.opt_value,
+                    crate::opt::OptGoal::Min => -solution.opt_value,
+                }
+            ),
             crate::opt::InstanceStatus::Feasible(_) => unreachable!(),
             crate::opt::InstanceStatus::Infeasible => crate::opt::InstanceStatus::Infeasible,
             crate::opt::InstanceStatus::Unsolved => crate::opt::InstanceStatus::Unsolved,
@@ -192,7 +198,7 @@ impl crate::opt::Solver for IncidenceGraph {
                 Err(_) => {
                     logger.lock().unwrap().log_error(
                         crate::error::MetamorhicError::Generic(format!(
-                            "Tree decomposition construction failed for ILP instance '{}'.\
+                            "Tree decomposition construction failed for ILP instance '{}'. \
                             Most probable cause is that the incidence graph of the instance is too big to compute its exact tree decomposition.",
                             self.name
                         ))
@@ -201,9 +207,10 @@ impl crate::opt::Solver for IncidenceGraph {
                 },
             };
 
-        logger.lock().unwrap().log_info(
-            "A nice tree decomposition was successfully computed. Proceeding with dynamic programming..."
-        );
+        logger.lock().unwrap().log_info(format!(
+            "A nice tree decomposition was successfully computed. The treewidth is {}. Proceeding now with dynamic programming...",
+            dv_instance.max_bag_size() - 1
+        ));
 
         if dv_instance.solve_using_nice_dtd(threads_count).is_err() {
             logger.lock().unwrap().log_error(
@@ -243,17 +250,144 @@ impl crate::opt::Solver for IncidenceGraph {
 
 }
 
+impl TryFrom<LpProblem> for IncidenceGraph {
+
+    type Error = crate::error::MetamorhicError;
+
+    fn try_from(lp_problem: LpProblem) -> crate::error::Result<Self> {
+
+        if lp_problem.objective_count() != 1 {
+            crate::return_error!(
+                BadInput,
+                "the LP file contains {} objective functions. \
+                The LP file must contain exactly one objective function.",
+                lp_problem.objective_count()
+            );
+        }
+
+        let mut answer = Self::new(
+            lp_problem.name().unwrap_or("Unnamed").to_string(),
+            match lp_problem.sense {
+                Sense::Maximize => crate::opt::OptGoal::Max,
+                Sense::Minimize => crate::opt::OptGoal::Min,
+            },
+        );
+
+        let obj: FxHashMap<_, _> = lp_problem
+            .objectives
+            .iter()
+            .next()
+            .unwrap()
+            .1
+            .coefficients
+            .iter()
+            .map(|coeff| (coeff.name, coeff.value))
+            .collect();
+
+        for (var_name_id, var) in lp_problem.variables.iter() {
+
+            let name = lp_problem.resolve(*var_name_id).to_string();
+            let lower_bound = var.bounds.effective_lower(var.kind);
+            let upper_bound = var.bounds.effective_upper(var.kind);
+            let obj_coeff = obj.get(var_name_id).copied().unwrap_or(0.0);
+
+            if lower_bound.is_infinite() {
+                crate::return_error!(
+                    BadInput,
+                    "the effective lower bound for variable '{}' in ILP instance '{}' is infinite. \
+                    To use the incidence graph solver for ILPs, you must ensure that every variable in the instance \
+                    is bounded by finite integers that fit into a 16-bit signed integer.",
+                    name, answer.name
+                )
+            }
+
+            if upper_bound.is_infinite() {
+                crate::return_error!(
+                    BadInput,
+                    "the effective upper bound for variable '{}' in ILP instance '{}' is infinite. \
+                    To use the incidence graph solver for ILPs, you must ensure that every variable in the instance \
+                    is bounded by finite integers that fit into a 16-bit signed integer.",
+                    name, answer.name
+                )
+            }
+
+            match var.kind {
+                VariableKind::Continuous => crate::return_error!(
+                    BadInput,
+                    "variable '{}' in ILP instance '{}' is declared as continuous. \
+                    All variables in ILPs must be declared in the LP file as either Binary, General or Integer.",
+                    name, answer.name
+                ),
+                VariableKind::SemiContinuous => crate::return_error!(
+                    BadInput,
+                    "variable '{}' in ILP instance '{}' is declared as semi-continuous. \
+                    All variables in ILPs must be declared in the LP file as either Binary, General or Integer.",
+                    name, answer.name
+                ),
+                VariableKind::Sos => crate::return_error!(
+                    BadInput,
+                    "variable '{}' in ILP instance '{}' participates in a SOS set. \
+                    SOS sets aren't supported by the incidence graph solver.",
+                    name, answer.name
+                ),
+                _ => (),
+            }
+
+            answer.add_var(name, lower_bound as crate::opt::ilp::VarValueType, upper_bound as crate::opt::ilp::VarValueType, obj_coeff)?;
+
+        }
+
+        for (constr_name_id, constr) in lp_problem.constraints.iter() {
+
+            let name = lp_problem.resolve(*constr_name_id).to_string();
+            let lhs: Vec<_>;
+            let rel;
+            let rhs;
+
+            match constr {
+                Constraint::Standard { name: _, coefficients, operator, rhs: rhs_, byte_offset: _ } => {
+                    lhs = coefficients
+                        .iter()
+                        .map(|coeff| (coeff.value, lp_problem.resolve(coeff.name)))
+                        .collect();
+                    rel = match operator {
+                        ComparisonOp::EQ => Ordering::Equal,
+                        ComparisonOp::GT => Ordering::Greater,
+                        ComparisonOp::GTE => Ordering::Greater,
+                        ComparisonOp::LT => Ordering::Less,
+                        ComparisonOp::LTE => Ordering::Less,
+                    };
+                    rhs = *rhs_;
+                },
+                Constraint::SOS { name: _, sos_type: _, weights: _, byte_offset: _ } => crate::return_error!(
+                    BadInput,
+                    "Constraint '{}' in ILP instance '{}' is an SOS constraint. \
+                    SOS constraints aren't supported by the incidence graph solver.",
+                    name, answer.name
+                ),
+            }
+
+            answer.add_constr(name, lhs, rel, rhs)?;
+
+        }
+
+        Ok(answer)
+
+    }
+
+}
+
 
 
 enum IncidenceGraphVertex {
-    VarVertex(crate::opt::ilp::ILPVariable),
-    ConstrVertex(crate::opt::ilp::ILPConstraint),
+    VarVertex(crate::opt::ilp::Variable),
+    ConstrVertex(crate::opt::ilp::Constraint),
 }
 
 
 
 const OBJ_VALUE_COLUMN_NAME: &str = "obj value";
-const ROW_INDEX_COLUMN_NAME: &str = "child row index";
+const ROW_INDEX_COLUMN_NAME: &str = "row index child";
 
 
 
@@ -266,6 +400,7 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
 
     fn leaf_payload(
         &mut self,
+        is_root: bool,
         bag: &Vec<usize>,
         additional_data: &IncidenceGraph,
     )
@@ -339,10 +474,22 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
 
         }
 
+        if is_root {
+            self.records = self.records
+                .clone()
+                .lazy()
+                .filter(
+                    rows_with_satisfied_constrs(&constrs)
+                )
+                .collect()
+                .unwrap();
+        }
+
     }
 
     fn forget_introduce_payload(
         &mut self,
+        is_root: bool,
         child_bag: &Vec<usize>,
         _child_nid: usize,
         child_memo: &Self,
@@ -359,7 +506,7 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
         let mut intermediate_records = child_memo.records
             .clone()
             .lazy()
-            .select([all().exclude_cols([format!("^{}*$", ROW_INDEX_COLUMN_NAME)]).as_expr()])
+            .select([col(OBJ_VALUE_COLUMN_NAME), col("^v.*$"), col("^c.*$")])
             .with_row_index(ROW_INDEX_COLUMN_NAME, None);
 
         // Forget vertices
@@ -367,22 +514,7 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
         // Then remove all columns corresponding to the forgotten vertices and group the remaining ones while aggregating the objective value
         intermediate_records = intermediate_records
             .filter(
-                forgotten_constrs
-                    .iter()
-                    .map(
-                        |(constr_vid, constr_info)| {
-                            let constr_column_name = format!("c{}", constr_vid.index());
-                            match constr_info.rel {
-                                Ordering::Equal => {
-                                    let (eq_lower_bound, eq_upper_bound) = ulp_bounds(constr_info.rhs);
-                                    col(constr_column_name.clone()).gt_eq(eq_lower_bound).and(col(constr_column_name).lt_eq(eq_upper_bound))
-                                },
-                                Ordering::Greater => col(constr_column_name).gt_eq(constr_info.rhs),
-                                Ordering::Less => col(constr_column_name).lt_eq(constr_info.rhs),
-                            }
-                        }
-                    )
-                    .fold(lit(true), |acc, expr| acc.and(expr))
+                rows_with_satisfied_constrs(&forgotten_constrs)
             )
             .drop(cols(forgotten_vars.iter().map(|(var_vid, _)| format!("v{}", var_vid.index()))))
             .drop(cols(forgotten_constrs.iter().map(|(constr_vid, _)| format!("c{}", constr_vid.index()))))
@@ -470,12 +602,26 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
 
         }
 
+        if is_root {
+            let new_constrs = constrs
+                .iter()
+                .filter(|(constr_vid, _)| !forgotten_constrs.contains_key(*constr_vid))
+                .chain(introduced_constrs.iter())
+                .map(|(constr_vid, constr)| (*constr_vid, *constr))
+                .collect();
+            intermediate_records = intermediate_records
+                .filter(
+                    rows_with_satisfied_constrs(&new_constrs)
+                );
+        }
+
         self.records = intermediate_records.collect().unwrap();
 
     }
 
     fn join_payload(
         &mut self,
+        is_root: bool,
         children_bag: &Vec<usize>,
         child1_nid: usize,
         child1_memo: &Self,
@@ -490,28 +636,34 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
         let intermediate_child1_records = child1_memo.records
             .clone()
             .lazy()
-            .select([all().exclude_cols([format!("^{}.*$", ROW_INDEX_COLUMN_NAME)]).as_expr()])
+            .select([col(OBJ_VALUE_COLUMN_NAME), col("^v.*$"), col("^c.*$")])
             .with_row_index(format!("{}{}", ROW_INDEX_COLUMN_NAME, child1_nid), None);
         let intermediate_child2_records = child2_memo.records
             .clone()
             .lazy()
-            .select([all().exclude_cols([format!("^{}*$", ROW_INDEX_COLUMN_NAME)]).as_expr()])
+            .select([col(OBJ_VALUE_COLUMN_NAME), col("^v.*$"), col("^c.*$")])
             .with_row_index(format!("{}{}", ROW_INDEX_COLUMN_NAME, child2_nid), None);
 
-        let joined_column_names: Vec<_> = vars
+        let join_on_column_names: Vec<_> = vars
             .iter()
             .map(|(var_vid, _)| col(format!("v{}", var_vid.index())))
             .collect();
 
+        let join_type = if join_on_column_names.len() > 0 {
+                JoinType::Inner
+            } else {
+                JoinType::Cross
+            };
+
         let mut intermediate_records = intermediate_child1_records
             .join(
                 intermediate_child2_records,
-                joined_column_names.clone(),
-                joined_column_names,
-                JoinArgs::new(JoinType::Inner),
+                join_on_column_names.clone(),
+                join_on_column_names,
+                JoinArgs::new(join_type),
             );
 
-        for (constr_vid, _) in constrs {
+        for (constr_vid, _) in constrs.iter() {
 
             let constr_column_name: PlSmallStr = format!("c{}", constr_vid.index()).into();
             let constr_column_name2: PlSmallStr = format!("c{}_right", constr_vid.index()).into();
@@ -526,7 +678,7 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
 
             for (var_vid, _) in vars.iter() {
 
-                if let Some(edge) = additional_data.incidence_graph.edges_connecting(constr_vid, *var_vid).next() {
+                if let Some(edge) = additional_data.incidence_graph.edges_connecting(*constr_vid, *var_vid).next() {
 
                     let var_column_name = format!("v{}", var_vid.index());
                     let coeff = *edge.weight();
@@ -561,6 +713,13 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                     ).alias(OBJ_VALUE_COLUMN_NAME)
                 );
 
+        }
+
+        if is_root {
+            intermediate_records = intermediate_records
+                .filter(
+                    rows_with_satisfied_constrs(&constrs)
+                );
         }
 
         self.records = intermediate_records.collect().unwrap();
@@ -647,7 +806,7 @@ struct IncidenceGraphSolution {
 fn split_vec_into_vars_and_constrs<'a>(
     bag: &Vec<usize>,
     incidence_graph: &'a IncidenceGraph,
-) -> (FxHashMap<NodeIndex, &'a crate::opt::ilp::ILPVariable>, FxHashMap<NodeIndex, &'a crate::opt::ilp::ILPConstraint>) {
+) -> (FxHashMap<NodeIndex, &'a crate::opt::ilp::Variable>, FxHashMap<NodeIndex, &'a crate::opt::ilp::Constraint>) {
 
     let mut vars = FxHashMap::with_capacity_and_hasher(bag.len(), FxBuildHasher::new());
     let mut constrs = FxHashMap::with_capacity_and_hasher(bag.len(), FxBuildHasher::new());
@@ -661,6 +820,26 @@ fn split_vec_into_vars_and_constrs<'a>(
 
     (vars, constrs)
 
+}
+
+#[inline]
+fn rows_with_satisfied_constrs(constrs: &FxHashMap<NodeIndex, &crate::opt::ilp::Constraint>) -> Expr {
+    constrs
+        .iter()
+        .map(
+            |(constr_vid, constr_info)| {
+                let constr_column_name = format!("c{}", constr_vid.index());
+                match constr_info.rel {
+                    Ordering::Equal => {
+                        let (eq_lower_bound, eq_upper_bound) = ulp_bounds(constr_info.rhs);
+                        col(constr_column_name.clone()).gt_eq(eq_lower_bound).and(col(constr_column_name).lt_eq(eq_upper_bound))
+                    },
+                    Ordering::Greater => col(constr_column_name).gt_eq(constr_info.rhs),
+                    Ordering::Less => col(constr_column_name).lt_eq(constr_info.rhs),
+                }
+            }
+        )
+        .fold(lit(true), |acc, expr| acc.and(expr))
 }
 
 fn ulp_bounds(x: f64) -> (f64, f64) {

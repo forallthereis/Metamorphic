@@ -10,13 +10,13 @@ type VarValueType = i16;
 
 
 
-struct ILPVariable {
+struct Variable {
     pub name: String,
     pub lower_bound: VarValueType,
     pub upper_bound: VarValueType,
 }
 
-impl ILPVariable {
+impl Variable {
 
     #[inline]
     fn range(&self) -> usize {
@@ -27,7 +27,7 @@ impl ILPVariable {
 
 
 
-struct ILPConstraint {
+struct Constraint {
     pub name: String,
     pub rel: Ordering,
     pub rhs: f64,

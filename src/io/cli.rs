@@ -55,6 +55,18 @@ pub(crate) fn inquire_config() -> crate::Config {
             .unwrap()
     );
 
+    let threads_count: usize = Text::new("Number of threads to use:")
+        .with_validator(|input: &str| {
+            match input.parse::<usize>() {
+                Ok(_) => Ok(Validation::Valid),
+                Err(_) => Ok(Validation::Invalid("This value must be a non-negative integer.".into())),
+            }
+        })
+        .prompt()
+        .unwrap()
+        .parse()
+        .unwrap();
+
     let log_destination = Select::new(
             "Where should the logs be written?",
             vec![
@@ -83,6 +95,6 @@ pub(crate) fn inquire_config() -> crate::Config {
 
     };
 
-    crate::Config { input_file_path, log_format, log_destination }
+    crate::Config { input_file_path, threads_count, log_format, log_destination }
 
 }

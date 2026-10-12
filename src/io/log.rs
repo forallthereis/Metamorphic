@@ -243,7 +243,7 @@ impl Logger {
 
             },
 
-            LogFormat::Markdown => { format!("{}|", message) },
+            LogFormat::Markdown => { format!("{}|", message.replace("\n", " ")) },
 
         }
 

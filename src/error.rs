@@ -4,10 +4,9 @@ pub(crate) type Result<T> = std::result::Result<T, MetamorhicError>;
 
 #[derive(Debug)]
 pub(crate) enum MetamorhicError {
-    ForbiddenCommand(String),
+    BadInput(String),
     Generic(String),
     OutOfMemory(String),
-    Timeout(String),
 }
 
 #[macro_export]
@@ -35,10 +34,9 @@ impl crate::io::log::Loggable for MetamorhicError {
     fn log_content(self) -> String {
 
         match self {
-            MetamorhicError::ForbiddenCommand(message) => format!("Metamorphic encountered a forbidden command. Specifically, {}", message),
+            MetamorhicError::BadInput(message) => format!("Metamorphic failed to load the optimisation problem instance. Specifically, {}", message),
             MetamorhicError::Generic(message) => message.clone(),
             MetamorhicError::OutOfMemory(message) => format!("The system ran out of memory. Specifically, {}", message),
-            MetamorhicError::Timeout(message) => format!("Maximum allowed runtime was reached. Specifically, {}", message),
         }
 
     }
