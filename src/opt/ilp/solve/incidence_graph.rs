@@ -42,7 +42,7 @@ impl IncidenceGraph {
 
         let eid_or_err = self.incidence_graph.try_add_node(
             IncidenceGraphVertex::ConstrVertex(
-                crate::opt::ilp::Constraint { name: name.clone(), rel, rhs }
+                crate::opt::ilp::Constraint { rel, rhs }
             )
         );
 

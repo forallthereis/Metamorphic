@@ -15,6 +15,7 @@ pub(crate) enum OptGoal {
 
 
 
+#[allow(unused)]
 pub(crate) enum InstanceStatus<SolutionType> {
     Unsolved,
     Infeasible,

@@ -28,7 +28,6 @@ impl Variable {
 
 
 struct Constraint {
-    pub name: String,
     pub rel: Ordering,
     pub rhs: f64,
 }
