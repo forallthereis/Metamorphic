@@ -24,9 +24,13 @@ pub(crate) enum InstanceStatus<SolutionType> {
 
 
 
+pub(crate) type VariableAssignment = FxHashMap<String, f64>;
+
+
+
 pub(crate) trait Solver {
 
-    fn solution(&self) -> InstanceStatus<FxHashMap<String, f64>>;
+    fn solution(&self) -> InstanceStatus<VariableAssignment>;
 
     fn solution_obj_value(&self) -> InstanceStatus<f64>;
 

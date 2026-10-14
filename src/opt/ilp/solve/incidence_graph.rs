@@ -1,10 +1,10 @@
-use std::{cmp::Ordering, sync::{Arc, Mutex}};
+use std::{cmp::Ordering, sync::{Arc, Mutex}, thread};
 
-use dendroverse::{BacktrackableMemo, DendroverseInstance, NiceDTDMemo};
+use dendroverse::{BacktrackableMemo, DTDGenerationAlgorithm, DendroverseInstance, NiceDTDMemo};
 use float_cmp::approx_eq;
 use fxhash::{FxBuildHasher, FxHashMap};
 use lp_parser_rs::{LpProblem, VariableKind, model::{ComparisonOp, Constraint, Sense}};
-use petgraph::{Graph, Undirected, graph::NodeIndex};
+use petgraph::{Graph, Undirected, algo::connected_components, graph::NodeIndex};
 use polars::prelude::*;
 
 
@@ -31,7 +31,6 @@ impl IncidenceGraph {
         rel: Ordering,
         rhs: f64,
     ) -> crate::error::Result<()> {
-
         if self.constr_name_map.try_reserve(1).is_err() {
             crate::return_error!(
                 OutOfMemory,
@@ -70,7 +69,6 @@ impl IncidenceGraph {
         }
 
         Ok(())
-
     }
 
     pub(crate) fn add_var(
@@ -80,7 +78,6 @@ impl IncidenceGraph {
         upper_bound: crate::opt::ilp::VarValueType,
         obj_coeff: f64,
     ) -> crate::error::Result<()> {
-
         if self.var_name_map.try_reserve(1).is_err() || self.obj_coeffs.try_reserve(1).is_err() {
             crate::return_error!(
                 OutOfMemory,
@@ -116,11 +113,18 @@ impl IncidenceGraph {
         );
 
         Ok(())
+    }
 
+    pub(crate) fn cc_count(&self) -> usize {
+        connected_components(&self.incidence_graph)
+    }
+
+    #[inline(always)]
+    pub(crate) fn edge_count(&self) -> usize {
+        self.incidence_graph.edge_count()
     }
 
     pub(crate) fn new(name: String, opt_goal: crate::opt::OptGoal) -> Self {
-
         Self {
             name,
             status: crate::opt::InstanceStatus::Unsolved,
@@ -130,17 +134,17 @@ impl IncidenceGraph {
             var_name_map: FxHashMap::with_hasher(FxBuildHasher::new()),
             constr_name_map: FxHashMap::with_hasher(FxBuildHasher::new()),
         }
-
     }
 
+    #[inline(always)]
+    pub(crate) fn vertex_count(&self) -> usize {
+        self.incidence_graph.node_count()
+    }
 }
 
 impl crate::opt::Solver for IncidenceGraph {
-
     fn solution(&self) -> crate::opt::InstanceStatus<FxHashMap<String, f64>> {
-
         match &self.status {
-
             crate::opt::InstanceStatus::Optimal(solution) =>
                 crate::opt::InstanceStatus::Optimal(
                     FxHashMap::from_iter(
@@ -161,9 +165,7 @@ impl crate::opt::Solver for IncidenceGraph {
             crate::opt::InstanceStatus::Infeasible => crate::opt::InstanceStatus::Infeasible,
 
             crate::opt::InstanceStatus::Unsolved => crate::opt::InstanceStatus::Unsolved,
-
         }
-
     }
 
     fn solution_obj_value(&self) -> crate::opt::InstanceStatus<f64> {
@@ -186,30 +188,38 @@ impl crate::opt::Solver for IncidenceGraph {
         threads_count: usize,
     )
     {
-
         logger.lock().unwrap().log_info(format!(
             "Computing a nice tree decomposition for ILP instance '{}'...",
             self.name
         ));
 
-        let mut dv_instance: DendroverseInstance<IncidenceGraphMemo, _> =
-            match DendroverseInstance::with_auto_generated_nice_dtd(&self.incidence_graph, self) {
-                Ok(value) => value,
-                Err(_) => {
-                    logger.lock().unwrap().log_error(
-                        crate::error::MetamorhicError::Generic(format!(
-                            "Tree decomposition construction failed for ILP instance '{}'. \
-                            Most probable cause is that the incidence graph of the instance is too big to compute its exact tree decomposition.",
-                            self.name
-                        ))
-                    );
-                    return;
-                },
-            };
+        let dv_instance_option = thread::scope(|s| -> Option<DendroverseInstance<IncidenceGraphMemo, _>> {
+            // Try the automatic strategy
+            let handle = s.spawn(
+                || DendroverseInstance::with_auto_generated_nice_dtd(&self.incidence_graph, self, DTDGenerationAlgorithm::GoatdPortfolio)
+            );
+            match handle.join() {
+                Ok(dv_instance_result) => Some(dv_instance_result.unwrap()),
+                Err(_) => None,
+            }
+        });
+
+        let mut dv_instance = match dv_instance_option {
+            Some(value) => value,
+            None => {
+                logger.lock().unwrap().log_error(
+                    "Tree decomposition computation using all available strategies failed. \
+                    The incidence graph is likely too large for Metamorphic to handle."
+                );
+                return;
+            },
+        };
 
         logger.lock().unwrap().log_info(format!(
-            "A nice tree decomposition was successfully computed. The treewidth is {}. Proceeding now with dynamic programming...",
-            dv_instance.max_bag_size() - 1
+            "A nice tree decomposition was successfully computed. The width is {}. \
+            Proceeding now with dynamic programming using {} working thread(s)...",
+            dv_instance.max_bag_size() - 1,
+            threads_count,
         ));
 
         if dv_instance.solve_using_nice_dtd(threads_count).is_err() {
@@ -245,17 +255,13 @@ impl crate::opt::Solver for IncidenceGraph {
                 _ => unreachable!(),
             }
         );
-
     }
-
 }
 
 impl TryFrom<LpProblem> for IncidenceGraph {
-
     type Error = crate::error::MetamorhicError;
 
     fn try_from(lp_problem: LpProblem) -> crate::error::Result<Self> {
-
         if lp_problem.objective_count() != 1 {
             crate::return_error!(
                 BadInput,
@@ -285,7 +291,6 @@ impl TryFrom<LpProblem> for IncidenceGraph {
             .collect();
 
         for (var_name_id, var) in lp_problem.variables.iter() {
-
             let name = lp_problem.resolve(*var_name_id).to_string();
             let lower_bound = var.bounds.effective_lower(var.kind);
             let upper_bound = var.bounds.effective_upper(var.kind);
@@ -334,11 +339,9 @@ impl TryFrom<LpProblem> for IncidenceGraph {
             }
 
             answer.add_var(name, lower_bound as crate::opt::ilp::VarValueType, upper_bound as crate::opt::ilp::VarValueType, obj_coeff)?;
-
         }
 
         for (constr_name_id, constr) in lp_problem.constraints.iter() {
-
             let name = lp_problem.resolve(*constr_name_id).to_string();
             let lhs: Vec<_>;
             let rel;
@@ -368,13 +371,10 @@ impl TryFrom<LpProblem> for IncidenceGraph {
             }
 
             answer.add_constr(name, lhs, rel, rhs)?;
-
         }
 
         Ok(answer)
-
     }
-
 }
 
 
@@ -397,7 +397,6 @@ struct IncidenceGraphMemo {
 }
 
 impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
-
     fn leaf_payload(
         &mut self,
         is_root: bool,
@@ -405,7 +404,6 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
         additional_data: &IncidenceGraph,
     )
     {
-
         let (vars, constrs) = split_vec_into_vars_and_constrs(bag, additional_data);
 
         let mut repeat_var_value_times: usize = vars
@@ -418,7 +416,6 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
         self.records.with_column(obj_column).unwrap();
 
         for (var_vid, var_info) in vars.iter() {
-
             repeat_var_value_times /= var_info.range();
 
             let var_column_name: PlSmallStr = format!("v{}", var_vid.index()).into();
@@ -440,20 +437,16 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                 )
                 .collect()
                 .unwrap();
-
         }
 
         for (constr_vid, _) in constrs.iter() {
-
             let constr_column_name: PlSmallStr = format!("c{}", constr_vid.index()).into();
             let constr_column = Column::new(constr_column_name.clone(), vec![0.0; records_count]);
 
             self.records.with_column(constr_column).unwrap();
 
             for (var_vid, _) in vars.iter() {
-
                 if let Some(edge) = additional_data.incidence_graph.edges_connecting(*constr_vid, *var_vid).next() {
-
                     let var_column_name = format!("v{}", var_vid.index());
                     let coeff = *edge.weight();
 
@@ -467,11 +460,8 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                         )
                         .collect()
                         .unwrap();
-
                 }
-
             }
-
         }
 
         if is_root {
@@ -484,7 +474,6 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                 .collect()
                 .unwrap();
         }
-
     }
 
     fn forget_introduce_payload(
@@ -498,7 +487,6 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
         additional_data: &IncidenceGraph,
     )
     {
-
         let (vars, constrs) = split_vec_into_vars_and_constrs(child_bag, additional_data);
         let (forgotten_vars, forgotten_constrs) = split_vec_into_vars_and_constrs(forgotten_vids, additional_data);
         let (introduced_vars, introduced_constrs) = split_vec_into_vars_and_constrs(introduced_vids, additional_data);
@@ -528,7 +516,6 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
 
         // Introduce vertices
         for (var_vid, var_info) in introduced_vars.iter() {
-
             let var_column_name: PlSmallStr = format!("v{}", var_vid.index()).into();
             let var_values = df!(var_column_name.clone() => Vec::from_iter((var_info.lower_bound..=var_info.upper_bound).map(|value| value as f64))).unwrap().lazy();
 
@@ -539,17 +526,13 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                         col(OBJ_VALUE_COLUMN_NAME) + lit(additional_data.obj_coeffs[var_vid]) * col(var_column_name)
                     ).alias(OBJ_VALUE_COLUMN_NAME)
                 );
-
         }
 
         for (constr_vid, _) in constrs.iter() {
-
             let constr_column_name: PlSmallStr = format!("c{}", constr_vid.index()).into();
 
             for (var_vid, _) in introduced_vars.iter() {
-
                 if let Some(edge) = additional_data.incidence_graph.edges_connecting(*constr_vid, *var_vid).next() {
-
                     let var_column_name = format!("v{}", var_vid.index());
                     let coeff = *edge.weight();
 
@@ -559,15 +542,11 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                                 col(constr_column_name.clone()) + lit(coeff) * col(var_column_name)
                             ).alias(constr_column_name.clone())
                         );
-
                 }
-
             }
-
         }
 
         for (constr_vid, _) in introduced_constrs.iter() {
-
             let constr_column_name: PlSmallStr = format!("c{}", constr_vid.index()).into();
 
             intermediate_records = intermediate_records
@@ -583,9 +562,7 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                 .chain(introduced_vars.iter());
 
             for (var_vid, _) in new_vars {
-
                 if let Some(edge) = additional_data.incidence_graph.edges_connecting(*constr_vid, *var_vid).next() {
-
                     let var_column_name = format!("v{}", var_vid.index());
                     let coeff = *edge.weight();
 
@@ -595,11 +572,8 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                                 col(constr_column_name.clone()) + lit(coeff) * col(var_column_name)
                             ).alias(constr_column_name.clone())
                         );
-
                 }
-
             }
-
         }
 
         if is_root {
@@ -616,7 +590,6 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
         }
 
         self.records = intermediate_records.collect().unwrap();
-
     }
 
     fn join_payload(
@@ -630,7 +603,6 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
         additional_data: &IncidenceGraph,
     )
     {
-
         let (vars, constrs) = split_vec_into_vars_and_constrs(children_bag, additional_data);
 
         let intermediate_child1_records = child1_memo.records
@@ -664,7 +636,6 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
             );
 
         for (constr_vid, _) in constrs.iter() {
-
             let constr_column_name: PlSmallStr = format!("c{}", constr_vid.index()).into();
             let constr_column_name2: PlSmallStr = format!("c{}_right", constr_vid.index()).into();
 
@@ -677,9 +648,7 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                 .drop(cols([constr_column_name2]));
 
             for (var_vid, _) in vars.iter() {
-
                 if let Some(edge) = additional_data.incidence_graph.edges_connecting(*constr_vid, *var_vid).next() {
-
                     let var_column_name = format!("v{}", var_vid.index());
                     let coeff = *edge.weight();
 
@@ -689,11 +658,8 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                                 col(constr_column_name.clone()) - lit(coeff) * col(var_column_name)
                             ).alias(constr_column_name.clone())
                         );
-
                 }
-
             }
-
         }
 
         intermediate_records = intermediate_records
@@ -705,14 +671,12 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
             .drop(cols([format!("{}_right", OBJ_VALUE_COLUMN_NAME)]));
 
         for (var_vid, _) in vars {
-
             intermediate_records = intermediate_records
                 .with_column(
                     (
                         col(OBJ_VALUE_COLUMN_NAME) - lit(additional_data.obj_coeffs[&var_vid]) * col(format!("v{}", var_vid.index()))
                     ).alias(OBJ_VALUE_COLUMN_NAME)
                 );
-
         }
 
         if is_root {
@@ -723,13 +687,10 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
         }
 
         self.records = intermediate_records.collect().unwrap();
-
     }
-
 }
 
 impl BacktrackableMemo for IncidenceGraphMemo {
-
     type BacktrackingHint = usize;
     type PartialSolutionType = IncidenceGraphSolution;
     type SolutionType = IncidenceGraphSolution;
@@ -742,7 +703,6 @@ impl BacktrackableMemo for IncidenceGraphMemo {
         children_nids: &Vec<usize>
     ) -> (Option<Self::PartialSolutionType>, Vec<Option<Self::BacktrackingHint>>)
     {
-
         let mut next_hint = Vec::with_capacity(2);
 
         let opt_row_idx = match hint {
@@ -788,9 +748,7 @@ impl BacktrackableMemo for IncidenceGraphMemo {
         }
 
         (Some(partial_solution), next_hint)
-
     }
-
 }
 
 

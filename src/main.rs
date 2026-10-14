@@ -10,11 +10,11 @@ mod opt;
 
 const F64_EQ_ULPS: i64 = 2;
 const SUPPORTED_INPUT_FILE_EXTENSIONS: [&str; 2] = ["lp", "mps"];
+const VERSION: &str = "0.1.0 (preview)";
 
 
 
 fn main() {
-
     let args: Vec<_> = env::args().collect();
 
     let config = if args.len() == 1 {
@@ -24,7 +24,6 @@ fn main() {
     };
 
     config.run();
-
 }
 
 
@@ -37,17 +36,13 @@ struct Config {
 }
 
 impl Config {
-
     fn run(&self) {
-
         let logger = Arc::new(Mutex::new(crate::io::log::Logger::new(self)));
 
-        logger.lock().unwrap().log_info("Metamorphic v.0.1.0\nLog started.");
+        logger.lock().unwrap().log_info(format!("Metamorphic v.{}\nLog started.", VERSION));
 
         crate::opt::ilp::solve::solve_with_incidence_graph(self, Arc::clone(&logger));
 
         logger.lock().unwrap().log_info("Log finished.");
-
     }
-
 }

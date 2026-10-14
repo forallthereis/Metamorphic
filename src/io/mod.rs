@@ -6,6 +6,7 @@ pub mod cli;
 pub mod log;
 pub mod lp;
 pub mod mps;
+pub mod sol;
 
 
 

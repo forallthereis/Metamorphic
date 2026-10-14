@@ -6,11 +6,11 @@ edition = "2024"
 [dependencies]
 chrono = "0.4.45"
 # dendroverse = { version = "0.2.0", features = ["integrate-petgraph"] }
-dendroverse = { git = "https://github.com/forallthereis/dendroverse.git", rev = "61b49d3", features = ["integrate-petgraph"] }
+dendroverse = { git = "https://github.com/forallthereis/dendroverse.git", rev = "e07a01a", features = ["engine-goatd", "integrate-petgraph"] }
 float-cmp = "0.10.0"
 fxhash = "0.2.1"
 inquire = "0.9.4"
 itertools = "0.15.0"
 lp_parser_rs = "5.0.1"
 petgraph = "0.8.3"
-polars = { version = "0.55.2", features = ["lazy", "cross_join"] }
+polars = { version = "0.55.2", default-features = false, features = ["lazy", "cross_join"] }

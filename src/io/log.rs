@@ -264,8 +264,8 @@ impl Display for LogFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::None => unreachable!(),
-            Self::PlainText => write!(f, "Plain text"),
-            Self::Markdown => write!(f, "Markdown"),
+            Self::PlainText => write!(f, "[logtxt] Plain text"),
+            Self::Markdown => write!(f, "[logmd] Markdown"),
         }
     }
 }
@@ -281,9 +281,9 @@ pub(crate) enum LogDestination {
 impl Display for LogDestination {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::None => write!(f, "Nowhere, i.e. disable logs"),
-            Self::StdOut => write!(f, "Standard output channel, i.e. stdout"),
-            Self::File => write!(f, "File on a disk"),
+            Self::None => write!(f, "[nolog] Nowhere, i.e. disable logs"),
+            Self::StdOut => write!(f, "[logstdout] Standard output channel"),
+            Self::File => write!(f, "[logfile] File on a disk"),
         }
     }
 }

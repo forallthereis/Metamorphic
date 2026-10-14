@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::{fmt::Display, path::{Path, PathBuf}, thread};
 
 use inquire::{Select, Text, set_global_render_config, ui::{Color, RenderConfig, Styled}, validator::Validation};
 
@@ -7,7 +7,6 @@ use inquire::{Select, Text, set_global_render_config, ui::{Color, RenderConfig, 
 
 
 pub(crate) fn inquire_config() -> crate::Config {
-
     let mut cli_config = RenderConfig::default();
     cli_config.unhighlighted_option_prefix = Styled::new("    ");
     cli_config.highlighted_option_prefix = Styled::new("   → ").with_fg(Color::LightCyan);
@@ -55,17 +54,30 @@ pub(crate) fn inquire_config() -> crate::Config {
             .unwrap()
     );
 
-    let threads_count: usize = Text::new("Number of threads to use:")
-        .with_validator(|input: &str| {
-            match input.parse::<usize>() {
-                Ok(_) => Ok(Validation::Valid),
-                Err(_) => Ok(Validation::Invalid("This value must be a non-negative integer.".into())),
-            }
-        })
+    let thread_count_source = Select::new(
+            "How should the number of worker threads be determined?",
+            vec![
+                ThreadCountSource::System,
+                ThreadCountSource::User,
+            ],
+        )
         .prompt()
-        .unwrap()
-        .parse()
         .unwrap();
+
+    let threads_count: usize = match thread_count_source {
+        ThreadCountSource::System => thread::available_parallelism().unwrap().get() - 1,
+        ThreadCountSource::User => Text::new("Number of threads to use:")
+            .with_validator(|input: &str| {
+                match input.parse::<usize>() {
+                    Ok(_) => Ok(Validation::Valid),
+                    Err(_) => Ok(Validation::Invalid("This value must be a non-negative integer.".into())),
+                }
+            })
+            .prompt()
+            .unwrap()
+            .parse()
+            .unwrap(),
+    };
 
     let log_destination = Select::new(
             "Where should the logs be written?",
@@ -96,5 +108,20 @@ pub(crate) fn inquire_config() -> crate::Config {
     };
 
     crate::Config { input_file_path, threads_count, log_format, log_destination }
+}
 
+
+
+enum ThreadCountSource {
+    System,
+    User,
+}
+
+impl Display for ThreadCountSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ThreadCountSource::System => write!(f, "[tcauto] Derive automatically"),
+            ThreadCountSource::User => write!(f, "[tc] Set manually"),
+        }
+    }
 }

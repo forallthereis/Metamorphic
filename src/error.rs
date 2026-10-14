@@ -5,6 +5,7 @@ pub(crate) type Result<T> = std::result::Result<T, MetamorhicError>;
 #[derive(Debug)]
 pub(crate) enum MetamorhicError {
     BadInput(String),
+    BadOutput(String),
     Generic(String),
     OutOfMemory(String),
 }
@@ -35,6 +36,7 @@ impl crate::io::log::Loggable for MetamorhicError {
 
         match self {
             MetamorhicError::BadInput(message) => format!("Metamorphic failed to load the optimisation problem instance. Specifically, {}", message),
+            MetamorhicError::BadOutput(message) => format!("Metamorphic failed to save the solution to the optimisation problem instance. Specifically, {}", message),
             MetamorhicError::Generic(message) => message.clone(),
             MetamorhicError::OutOfMemory(message) => format!("The system ran out of memory. Specifically, {}", message),
         }
