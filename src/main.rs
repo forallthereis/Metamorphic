@@ -1,4 +1,6 @@
-use std::{env, path::PathBuf, sync::{Arc, Mutex}};
+use std::{env, path::PathBuf, sync::{Arc, Mutex}, thread};
+
+use clap::Parser;
 
 mod error;
 mod io;
@@ -20,7 +22,17 @@ fn main() {
     let config = if args.len() == 1 {
         crate::io::cli::inquire_config()
     } else {
-        todo!();
+        let cl_input = crate::io::cli::CLInput::parse();
+
+        Config {
+            input_file_path: cl_input.input_file_path,
+            threads_count: match cl_input.thread_count {
+                crate::io::cli::CLInputThreadCount::System => thread::available_parallelism().unwrap().get() - 1,
+                crate::io::cli::CLInputThreadCount::User(value) => value,
+            },
+            log_format: cl_input.log_format,
+            log_destination: cl_input.log_destination,
+        }
     };
 
     config.run();
@@ -39,7 +51,7 @@ impl Config {
     fn run(&self) {
         let logger = Arc::new(Mutex::new(crate::io::log::Logger::new(self)));
 
-        logger.lock().unwrap().log_info(format!("Metamorphic v.{}\nLog started.", VERSION));
+        logger.lock().unwrap().log_info(format!("Metamorphic v{}\nLog started.", VERSION));
 
         crate::opt::ilp::solve::solve_with_incidence_graph(self, Arc::clone(&logger));
 

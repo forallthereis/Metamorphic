@@ -1,5 +1,6 @@
 use std::{fmt::Display, path::{Path, PathBuf}, thread};
 
+use clap::Parser;
 use inquire::{Select, Text, set_global_render_config, ui::{Color, RenderConfig, Styled}, validator::Validation};
 
 
@@ -112,6 +113,36 @@ pub(crate) fn inquire_config() -> crate::Config {
 
 
 
+#[derive(Parser)]
+#[command(
+    name = "Metamorphic",
+    version,
+    about = "Tree-decomposition-based solver for integer linear programs",
+)]
+pub(crate) struct CLInput {
+    /// Path to the input file. Supported formats: LP, MPS.
+    pub input_file_path: PathBuf,
+    /// Number of worker threads to be used for solving the given optimisation problem instance.
+    /// This must be either a positive integer or 'tcauto'.
+    /// If the value 'tcauto' is given, Metamorphic will decide automatically how many threads to use.
+    pub thread_count: CLInputThreadCount,
+    /// Where the logs should be written.
+    /// This must be either 'logfile', 'logstdout' or 'nolog'.
+    /// If the value 'logfile' is given, logs will be saved in a file called '<INPUT FILE NAME>.log' that will
+    /// be created in the folder of the input file.
+    /// Existing file with the same name will be overwritten.
+    /// If the value 'logstdout' is given, logs will be printed into the standard output channel (i.e. this console).
+    /// If the value 'nolog' is given, no logs will be made.
+    pub log_destination: crate::io::log::LogDestination,
+    /// The format of logs.
+    /// This must be either 'logtxt' or 'logmd'.
+    /// If the value 'logtxt' is given, logs will be formatted as plain text.
+    /// If the value 'logmd' is given, logs will be formatted in Markdown.
+    pub log_format: crate::io::log::LogFormat,
+}
+
+
+
 enum ThreadCountSource {
     System,
     User,
@@ -121,7 +152,37 @@ impl Display for ThreadCountSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ThreadCountSource::System => write!(f, "[tcauto] Derive automatically"),
-            ThreadCountSource::User => write!(f, "[tc] Set manually"),
+            ThreadCountSource::User => write!(f, "Set manually"),
         }
+    }
+}
+
+
+
+#[derive(Clone)]
+pub enum CLInputThreadCount {
+    System,
+    User(usize),
+}
+
+impl std::str::FromStr for CLInputThreadCount {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "tcauto" {
+            return Ok(CLInputThreadCount::System);
+        }
+
+        let count: usize = value
+            .parse()
+            .map_err(|_| {
+                "Expected 'tcauto' or a positive integer."
+            })?;
+
+        if count == 0 {
+            return Err("Thread count must be greater than zero.");
+        }
+
+        Ok(CLInputThreadCount::User(count))
     }
 }

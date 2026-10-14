@@ -270,8 +270,21 @@ impl Display for LogFormat {
     }
 }
 
+impl std::str::FromStr for LogFormat {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "logtxt" => Ok(LogFormat::PlainText),
+            "logmd" => Ok(LogFormat::Markdown),
+            _ => Err("Unsupported log format.")
+        }
+    }
+}
 
 
+
+#[derive(Clone)]
 pub(crate) enum LogDestination {
     None,
     StdOut,
@@ -284,6 +297,19 @@ impl Display for LogDestination {
             Self::None => write!(f, "[nolog] Nowhere, i.e. disable logs"),
             Self::StdOut => write!(f, "[logstdout] Standard output channel"),
             Self::File => write!(f, "[logfile] File on a disk"),
+        }
+    }
+}
+
+impl std::str::FromStr for LogDestination {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "logfile" => Ok(Self::File),
+            "logstdout" => Ok(Self::StdOut),
+            "nolog" => Ok(Self::None),
+            _ => Err("Unsupported log destination.")
         }
     }
 }
