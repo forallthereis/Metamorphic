@@ -7,7 +7,7 @@ use inquire::{Select, Text, set_global_render_config, ui::{Color, RenderConfig, 
 
 
 
-pub(crate) fn inquire_config() -> crate::Config {
+pub(crate) fn create_runner_interactively() -> crate::MetamorphicRunner {
     let mut cli_config = RenderConfig::default();
     cli_config.unhighlighted_option_prefix = Styled::new("    ");
     cli_config.highlighted_option_prefix = Styled::new("   → ").with_fg(Color::LightCyan);
@@ -16,40 +16,10 @@ pub(crate) fn inquire_config() -> crate::Config {
     let input_file_path = PathBuf::from(
         Text::new("Path to the input file:")
             .with_validator(|input: &str| {
-                let path = Path::new(input);
-
-                if !path.exists() {
-                    return Ok(Validation::Invalid(
-                        "The specified path does not exist.".into(),
-                    ));
+                match validate_input_file_path(input) {
+                    Ok(_) => Ok(Validation::Valid),
+                    Err(e) => Ok(Validation::Invalid(e.into())),
                 }
-
-                if !path.is_file() {
-                    return Ok(Validation::Invalid(
-                        "The specified path is not a file.".into(),
-                    ));
-                }
-
-                match path.extension() {
-                    Some(extension) => {
-                        let extension = match extension.to_ascii_lowercase().as_os_str().to_str() {
-                            Some(extension) => extension.to_string(),
-                            None => return Ok(Validation::Invalid(
-                                "File extension isn't supported.".into(),
-                            )),
-                        };
-                        if !crate::SUPPORTED_INPUT_FILE_EXTENSIONS.contains(&extension.as_ref()) {
-                            return Ok(Validation::Invalid(
-                                "File extension isn't supported.".into(),
-                            ));
-                        }
-                    },
-                    None => return Ok(Validation::Invalid(
-                        "File extension isn't supported.".into(),
-                    )),
-                }
-
-                Ok(Validation::Valid)
             })
             .prompt()
             .unwrap()
@@ -108,7 +78,7 @@ pub(crate) fn inquire_config() -> crate::Config {
 
     };
 
-    crate::Config { input_file_path, threads_count, log_format, log_destination }
+    crate::MetamorphicRunner { input_file_path, threads_count, log_format, log_destination }
 }
 
 
@@ -121,6 +91,7 @@ pub(crate) fn inquire_config() -> crate::Config {
 )]
 pub(crate) struct CLInput {
     /// Path to the input file. Supported formats: LP, MPS.
+    #[arg(value_parser = validate_input_file_path)]
     pub input_file_path: PathBuf,
     /// Number of worker threads to be used for solving the given optimisation problem instance.
     /// This must be either a positive integer or 'tcauto'.
@@ -138,6 +109,7 @@ pub(crate) struct CLInput {
     /// This must be either 'logtxt' or 'logmd'.
     /// If the value 'logtxt' is given, logs will be formatted as plain text.
     /// If the value 'logmd' is given, logs will be formatted in Markdown.
+    /// If the previous argument is 'nolog', then this value can be either 'logtxt' or 'logmd' - it will have no effect anyway.
     pub log_format: crate::io::log::LogFormat,
 }
 
@@ -185,4 +157,33 @@ impl std::str::FromStr for CLInputThreadCount {
 
         Ok(CLInputThreadCount::User(count))
     }
+}
+
+
+
+fn validate_input_file_path(input_file_path: &str) -> Result<PathBuf, &'static str> {
+    let path = Path::new(input_file_path);
+
+    if !path.exists() {
+        return Err("The specified path does not exist.");
+    }
+
+    if !path.is_file() {
+        return Err("The specified path is not a file.");
+    }
+
+    match path.extension() {
+        Some(extension) => {
+            let extension = match extension.to_ascii_lowercase().as_os_str().to_str() {
+                Some(extension) => extension.to_string(),
+                None => return Err("File extension isn't supported."),
+            };
+            if !crate::SUPPORTED_INPUT_FILE_EXTENSIONS.contains(&extension.as_ref()) {
+                return Err("File extension isn't supported.");
+            }
+        },
+        None => return Err("File extension isn't supported."),
+    }
+
+    Ok(PathBuf::from(input_file_path))
 }

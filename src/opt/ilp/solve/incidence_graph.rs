@@ -1,7 +1,6 @@
 use std::{cmp::Ordering, sync::{Arc, Mutex}, thread};
 
 use dendroverse::{BacktrackableMemo, DTDGenerationAlgorithm, DendroverseInstance, NiceDTDMemo};
-use float_cmp::approx_eq;
 use fxhash::{FxBuildHasher, FxHashMap};
 use lp_parser_rs::{LpProblem, VariableKind, model::{ComparisonOp, Constraint, Sense}};
 use petgraph::{Graph, Undirected, algo::connected_components, graph::NodeIndex};
@@ -16,6 +15,7 @@ pub(crate) struct IncidenceGraph {
     pub name: String,
     status: crate::opt::InstanceStatus<IncidenceGraphSolution>,
     obj_coeffs: FxHashMap<NodeIndex, f64>,
+    obj_const: f64,
     opt_goal: crate::opt::OptGoal,
     incidence_graph: Graph<IncidenceGraphVertex, f64, Undirected, u32>,
     var_name_map: FxHashMap<String, NodeIndex>,
@@ -58,7 +58,9 @@ impl IncidenceGraph {
         let eid = eid_or_err.unwrap();
 
         for (coeff, var_name) in lhs {
-            if !approx_eq!(f64, coeff, 0.0, ulps = crate::F64_EQ_ULPS) && self.incidence_graph.try_update_edge(eid, self.var_name_map[var_name], coeff).is_err() {
+            let (eq_zero_lower_bound, eq_zero_upper_bound) = eq_bounds(0.0);
+            if (coeff < eq_zero_lower_bound || coeff > eq_zero_upper_bound)
+            && self.incidence_graph.try_update_edge(eid, self.var_name_map[var_name], coeff).is_err() {
                 crate::return_error!(
                     OutOfMemory,
                     "there was not enough memory to add constraint '{}' to ILP instance '{}'. \
@@ -129,6 +131,7 @@ impl IncidenceGraph {
             name,
             status: crate::opt::InstanceStatus::Unsolved,
             obj_coeffs: FxHashMap::with_hasher(FxBuildHasher::new()),
+            obj_const: 0.0,
             opt_goal,
             incidence_graph: Graph::new_undirected(),
             var_name_map: FxHashMap::with_hasher(FxBuildHasher::new()),
@@ -174,7 +177,7 @@ impl crate::opt::Solver for IncidenceGraph {
                 match self.opt_goal {
                     crate::opt::OptGoal::Max => solution.opt_value,
                     crate::opt::OptGoal::Min => -solution.opt_value,
-                }
+                } + self.obj_const
             ),
             crate::opt::InstanceStatus::Feasible(_) => unreachable!(),
             crate::opt::InstanceStatus::Infeasible => crate::opt::InstanceStatus::Infeasible,
@@ -208,7 +211,7 @@ impl crate::opt::Solver for IncidenceGraph {
             Some(value) => value,
             None => {
                 logger.lock().unwrap().log_error(
-                    "Tree decomposition computation using all available strategies failed. \
+                    "Tree decomposition computation failed. \
                     The incidence graph is likely too large for Metamorphic to handle."
                 );
                 return;
@@ -279,16 +282,20 @@ impl TryFrom<LpProblem> for IncidenceGraph {
             },
         );
 
-        let obj: FxHashMap<_, _> = lp_problem
+        let lp_problem_obj = lp_problem
             .objectives
             .iter()
             .next()
             .unwrap()
-            .1
+            .1;
+
+        let obj: FxHashMap<_, _> = lp_problem_obj
             .coefficients
             .iter()
             .map(|coeff| (coeff.name, coeff.value))
             .collect();
+
+        answer.obj_const = lp_problem_obj.constant;
 
         for (var_name_id, var) in lp_problem.variables.iter() {
             let name = lp_problem.resolve(*var_name_id).to_string();
@@ -306,6 +313,18 @@ impl TryFrom<LpProblem> for IncidenceGraph {
                 )
             }
 
+            if lower_bound < crate::opt::ilp::VarValueType::MIN as f64
+            || lower_bound > crate::opt::ilp::VarValueType::MAX as f64 {
+                crate::return_error!(
+                    BadInput,
+                    "the effective lower bound for variable '{}' in ILP instance '{}' is {}, which is outside the \
+                    limits acceptable for Metamorphic. \
+                    To use the incidence graph solver for ILPs, you must ensure that every variable in the instance \
+                    is bounded by finite integers that fit into a 16-bit signed integer.",
+                    name, answer.name, lower_bound
+                )
+            }
+
             if upper_bound.is_infinite() {
                 crate::return_error!(
                     BadInput,
@@ -313,6 +332,28 @@ impl TryFrom<LpProblem> for IncidenceGraph {
                     To use the incidence graph solver for ILPs, you must ensure that every variable in the instance \
                     is bounded by finite integers that fit into a 16-bit signed integer.",
                     name, answer.name
+                )
+            }
+
+            if upper_bound < crate::opt::ilp::VarValueType::MIN as f64
+            || upper_bound > crate::opt::ilp::VarValueType::MAX as f64 {
+                crate::return_error!(
+                    BadInput,
+                    "the effective upper bound for variable '{}' in ILP instance '{}' is {}, which is outside the \
+                    limits acceptable for Metamorphic. \
+                    To use the incidence graph solver for ILPs, you must ensure that every variable in the instance \
+                    is bounded by finite integers that fit into a 16-bit signed integer.",
+                    name, answer.name, upper_bound
+                )
+            }
+
+            if lower_bound > upper_bound {
+                crate::return_error!(
+                    BadInput,
+                    "the effective lower bound for variable '{}' in ILP instance '{}' is {}, which is greater than its \
+                    effective upper bound of {}. \
+                    Make sure that all lower bounds are lower than the corresponding upper bounds.",
+                    name, answer.name, lower_bound, upper_bound
                 )
             }
 
@@ -338,7 +379,12 @@ impl TryFrom<LpProblem> for IncidenceGraph {
                 _ => (),
             }
 
-            answer.add_var(name, lower_bound as crate::opt::ilp::VarValueType, upper_bound as crate::opt::ilp::VarValueType, obj_coeff)?;
+            answer.add_var(
+                name,
+                lower_bound.ceil() as crate::opt::ilp::VarValueType,
+                upper_bound.floor() as crate::opt::ilp::VarValueType,
+                obj_coeff,
+            )?;
         }
 
         for (constr_name_id, constr) in lp_problem.constraints.iter() {
@@ -605,16 +651,19 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
     {
         let (vars, constrs) = split_vec_into_vars_and_constrs(children_bag, additional_data);
 
+        let row_index_column_name1 = format!("{}{}", ROW_INDEX_COLUMN_NAME, child1_nid);
+        let row_index_column_name2 = format!("{}{}", ROW_INDEX_COLUMN_NAME, child2_nid);
+
         let intermediate_child1_records = child1_memo.records
             .clone()
             .lazy()
             .select([col(OBJ_VALUE_COLUMN_NAME), col("^v.*$"), col("^c.*$")])
-            .with_row_index(format!("{}{}", ROW_INDEX_COLUMN_NAME, child1_nid), None);
+            .with_row_index(row_index_column_name1.as_str(), None);
         let intermediate_child2_records = child2_memo.records
             .clone()
             .lazy()
             .select([col(OBJ_VALUE_COLUMN_NAME), col("^v.*$"), col("^c.*$")])
-            .with_row_index(format!("{}{}", ROW_INDEX_COLUMN_NAME, child2_nid), None);
+            .with_row_index(row_index_column_name2.as_str(), None);
 
         let join_on_column_names: Vec<_> = vars
             .iter()
@@ -678,6 +727,14 @@ impl NiceDTDMemo<IncidenceGraph> for IncidenceGraphMemo {
                     ).alias(OBJ_VALUE_COLUMN_NAME)
                 );
         }
+
+        intermediate_records = intermediate_records
+            .group_by([col("^v.*$"), col("^c.*$")])
+            .agg([
+                col(OBJ_VALUE_COLUMN_NAME).max().alias(OBJ_VALUE_COLUMN_NAME),
+                col(row_index_column_name1.as_str()).max_by(col(OBJ_VALUE_COLUMN_NAME)).alias(row_index_column_name1),
+                col(row_index_column_name2.as_str()).max_by(col(OBJ_VALUE_COLUMN_NAME)).alias(row_index_column_name2),
+            ]);
 
         if is_root {
             intermediate_records = intermediate_records
@@ -787,21 +844,20 @@ fn rows_with_satisfied_constrs(constrs: &FxHashMap<NodeIndex, &crate::opt::ilp::
         .map(
             |(constr_vid, constr_info)| {
                 let constr_column_name = format!("c{}", constr_vid.index());
+                let (eq_lower_bound, eq_upper_bound) = eq_bounds(constr_info.rhs);
                 match constr_info.rel {
-                    Ordering::Equal => {
-                        let (eq_lower_bound, eq_upper_bound) = ulp_bounds(constr_info.rhs);
-                        col(constr_column_name.clone()).gt_eq(eq_lower_bound).and(col(constr_column_name).lt_eq(eq_upper_bound))
-                    },
-                    Ordering::Greater => col(constr_column_name).gt_eq(constr_info.rhs),
-                    Ordering::Less => col(constr_column_name).lt_eq(constr_info.rhs),
+                    Ordering::Equal => col(constr_column_name.clone()).gt_eq(eq_lower_bound).and(
+                        col(constr_column_name).lt_eq(eq_upper_bound)
+                    ),
+                    Ordering::Greater => col(constr_column_name).gt_eq(eq_lower_bound),
+                    Ordering::Less => col(constr_column_name).lt_eq(eq_upper_bound),
                 }
             }
         )
         .fold(lit(true), |acc, expr| acc.and(expr))
 }
 
-fn ulp_bounds(x: f64) -> (f64, f64) {
-
+fn eq_bounds(x: f64) -> (f64, f64) {
     let mut lower = x;
     let mut upper = x;
 
@@ -810,6 +866,8 @@ fn ulp_bounds(x: f64) -> (f64, f64) {
         upper = upper.next_up();
     }
 
-    (lower, upper)
+    lower = lower.min(x - crate::F64_EQ_ABS);
+    upper = upper.max(x + crate::F64_EQ_ABS);
 
+    (lower, upper)
 }

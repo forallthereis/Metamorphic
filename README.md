@@ -11,7 +11,8 @@ Note that Metamorphic isn't intended to be a general-purpose ILP solver and it c
 
 Metamorphic solves ILPs:
 1. That have a low incidence treewidth.
-2. In which each variable has explicit, finite lower and upper bounds.
+2. In which each variable has explicit, finite lower and upper bounds that fit in a sized 16-bit integer.
+Ideally, these bounds should be as close to each other as possible.
 
 It does this in the following order:
 1. It reads an ILP instance from the given input file, builds an incidence graph for it. Supported input formats are LP and MPS.

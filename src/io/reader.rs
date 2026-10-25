@@ -6,12 +6,10 @@ use lp_parser_rs::{LpProblem, parser};
 
 
 
-pub(crate) struct LPReader;
+pub struct Reader;
 
-impl crate::io::Reader for LPReader {
-
-    fn read(&self, file_path: &Path) -> crate::error::Result<LpProblem> {
-
+impl Reader {
+    pub fn read(&self, file_path: &Path) -> crate::error::Result<LpProblem> {
         let lp_problem_contents = match parser::parse_file(&file_path) {
             Ok(lp_problem_contents) => lp_problem_contents,
             Err(e) => crate::return_error!(
@@ -21,7 +19,13 @@ impl crate::io::Reader for LPReader {
             ),
         };
 
-        let lp_problem = match LpProblem::parse(&lp_problem_contents) {
+        let lp_problem_result = match file_path.extension().unwrap().to_ascii_lowercase().to_str().unwrap() {
+            "lp" => LpProblem::parse(&lp_problem_contents),
+            "mps" => LpProblem::parse_mps(&lp_problem_contents),
+            _ => unreachable!(),
+        };
+
+        let lp_problem = match lp_problem_result {
             Ok(lp_problem) => lp_problem,
             Err(e) => crate::return_error!(
                 Generic,
@@ -31,7 +35,5 @@ impl crate::io::Reader for LPReader {
         };
 
         Ok(lp_problem)
-
     }
-
 }

@@ -17,12 +17,10 @@ struct Variable {
 }
 
 impl Variable {
-
     #[inline]
     fn range(&self) -> usize {
-        (self.upper_bound - self.lower_bound) as usize + 1
+        (self.upper_bound as usize - self.lower_bound as usize) + 1
     }
-
 }
 
 

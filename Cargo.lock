@@ -551,7 +551,8 @@ checksum = "7eed2c4702fa172d1ce21078faa7c5203e69f5394d48cc436d25928394a867a2"
 [[package]]
 name = "dendroverse"
 version = "0.3.0"
-source = "git+https://github.com/forallthereis/dendroverse.git?rev=e07a01a#e07a01a3c0c0b9cea3f6d36a3a35bff2aad3badc"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cf8002cb82bd685ea4860ce72d06579490dc9061fee530d213ce1473eaf91a7"
 dependencies = [
  "anyhow",
  "fxhash",
@@ -687,15 +688,6 @@ name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
-
-[[package]]
-name = "float-cmp"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
-dependencies = [
- "num-traits",
-]
 
 [[package]]
 name = "fnv"
@@ -1182,7 +1174,6 @@ dependencies = [
  "chrono",
  "clap",
  "dendroverse",
- "float-cmp",
  "fxhash",
  "inquire",
  "itertools 0.15.0",

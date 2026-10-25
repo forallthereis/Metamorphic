@@ -2,8 +2,8 @@ use std::{fs::File, io::Write};
 
 use itertools::Itertools;
 
-pub(crate) fn write(config: &crate::Config, solution: &crate::opt::VariableAssignment, obj_value: f64) -> crate::error::Result<()> {
-    let mut sol_file_path = config.input_file_path.clone();
+pub(crate) fn write(runner: &crate::MetamorphicRunner, solution: &crate::opt::VariableAssignment, obj_value: f64) -> crate::error::Result<()> {
+    let mut sol_file_path = runner.input_file_path.clone();
     sol_file_path.set_extension("sol");
 
     let mut sol_file = match File::create(&sol_file_path) {

@@ -28,12 +28,10 @@ pub(crate) struct Logger {
 }
 
 impl Logger {
-
     pub(crate) fn log_info<Item>(&mut self, item: Item)
     where
         Item: Loggable,
     {
-
         if self.format == LogFormat::None {
             return;
         }
@@ -64,14 +62,12 @@ impl Logger {
         let content = self.fmt_log_content(item.log_content());
 
         writeln!(self.log_writer, "{}{}", timestamp_string, content).expect("Log destination is no longer accessible.");
-
     }
 
     pub(crate) fn log_error<Item>(&mut self, item: Item)
     where
         Item: Loggable,
     {
-
         if self.format == LogFormat::None {
             return;
         }
@@ -102,11 +98,9 @@ impl Logger {
         let content = self.fmt_log_content(item.log_content());
 
         writeln!(self.log_writer, "{}{}", timestamp_string, content).expect("Log destination is no longer accessible.");
-
     }
 
-    pub(crate) fn new(config: &crate::Config) -> Self {
-
+    pub(crate) fn new(config: &crate::MetamorphicRunner) -> Self {
         let mut log_file_path = config.input_file_path.clone();
         log_file_path.set_extension("log");
 
@@ -126,17 +120,13 @@ impl Logger {
         }
 
         Logger { format, log_writer }
-
     }
 
     fn fmt_log_content(&self, message: String) -> String {
-
         match self.format {
-
             LogFormat::None => unreachable!(),
 
             LogFormat::PlainText => {
-
                 const MAX_LENGTH: usize = 80;
 
                 let mut lines = Vec::new();
@@ -160,7 +150,6 @@ impl Logger {
 
                         // Flush any existing chunk before a word that cannot fit
                         if word.chars().count() > MAX_LENGTH {
-
                             if !current.is_empty() {
                                 lines.push(std::mem::take(&mut current));
                             }
@@ -168,7 +157,6 @@ impl Logger {
                             let mut chunk = String::new();
 
                             for ch in word.chars() {
-
                                 chunk.push(ch);
 
                                 if chunk.chars().count() == MAX_LENGTH {
@@ -179,9 +167,7 @@ impl Logger {
                             if !chunk.is_empty() {
                                 current = chunk;
                             }
-
                         } else {
-
                             let needed = word.chars().count();
 
                             if !current.is_empty() && current.chars().count() + needed > MAX_LENGTH {
@@ -189,26 +175,22 @@ impl Logger {
                             }
 
                             current.push_str(&word);
-
                         }
                     } else {
                         // Read a run of non-word characters.
                         let mut separator = String::new();
 
                         while let Some(ch) = chars.peek().copied() {
-
                             if ch.is_alphanumeric() {
                                 break;
                             }
 
                             separator.push(ch);
                             chars.next();
-
                         }
 
                         // Preserve separators, splitting them if necessary.
                         for ch in separator.chars() {
-
                             if current.chars().count() == MAX_LENGTH {
                                 lines.push(std::mem::take(&mut current));
                             }
@@ -219,7 +201,6 @@ impl Logger {
                             }
 
                             current.push(ch);
-
                         }
                     }
                 }
@@ -244,11 +225,8 @@ impl Logger {
             },
 
             LogFormat::Markdown => { format!("{}|", message.replace("\n", " ")) },
-
         }
-
     }
-
 }
 
 

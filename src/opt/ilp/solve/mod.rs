@@ -11,18 +11,14 @@ pub mod incidence_graph;
 
 
 pub(crate) fn solve_with_incidence_graph(
-    config: &crate::Config,
+    config: &crate::MetamorphicRunner,
     logger: Arc<Mutex<crate::io::log::Logger>>
 ) {
     logger.lock().unwrap().log_info("Reading the input file...");
 
     let input_read_start_time = Utc::now();
 
-    let reader: Box<dyn crate::io::Reader> = match config.input_file_path.extension().unwrap().to_ascii_lowercase().to_str().unwrap() {
-        "lp" => Box::new(crate::io::lp::LPReader),
-        "mps" => Box::new(crate::io::mps::MPSReader),
-        _ => unreachable!(),
-    };
+    let reader = crate::io::reader::Reader;
 
     let raw_instance = match reader.read(&config.input_file_path) {
         Ok(value) => value,
@@ -62,14 +58,14 @@ pub(crate) fn solve_with_incidence_graph(
             Some(value)
         },
         crate::opt::InstanceStatus::Infeasible => None,
-        crate::opt::InstanceStatus::Unsolved => unreachable!(),
+        crate::opt::InstanceStatus::Unsolved => None,
     };
 
     let solution_write_result = match instance.solution() {
         crate::opt::InstanceStatus::Optimal(solution) => crate::io::sol::write(config, &solution, obj_value.unwrap()),
         crate::opt::InstanceStatus::Feasible(solution) => crate::io::sol::write(config, &solution, obj_value.unwrap()),
         crate::opt::InstanceStatus::Infeasible => Ok(()),
-        crate::opt::InstanceStatus::Unsolved => unreachable!(),
+        crate::opt::InstanceStatus::Unsolved => Ok(()),
     };
 
     match solution_write_result {
